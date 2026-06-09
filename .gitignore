@@ -1,0 +1,11 @@
+node_modules
+dist
+*.log
+.DS_Store
+.playwright-mcp
+
+# Fetched corpora + built DBs — recreate with `npm run data`. NOT committed, so clones stay small
+# (the source versions to build from are pinned in sources.lock.json, which IS committed).
+/data
+/public/db
+*.sqlite

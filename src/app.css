@@ -1,0 +1,210 @@
+:root {
+  --bg: #faf8f4;
+  --panel: #ffffff;
+  --ink: #1c1a17;
+  --muted: #8a8378;
+  --accent: #8a5a2b;
+  --line: #e7e1d6;
+  --hover: #f3eee5;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.app { max-width: 1200px; margin: 0 auto; padding: 0 16px 48px; }
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 18px 4px 14px;
+  border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 22px; margin: 0; font-weight: 700; }
+header .sub { color: var(--muted); font-weight: 400; font-size: 15px; }
+header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
+
+.wipe {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.wipe:hover { border-color: #d9b38c; color: var(--accent); }
+
+.error {
+  background: #fdecea; color: #8a1c12; border: 1px solid #f3c2bc;
+  padding: 10px 12px; border-radius: 8px; margin: 12px 0; font-size: 13px; white-space: pre-wrap;
+}
+
+.layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; margin-top: 16px; }
+
+.catalog {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  align-self: start;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+
+.cat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 10px 4px 4px;
+  font-weight: 700;
+}
+.cat-label .he { letter-spacing: 0; text-transform: none; }
+
+.book {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.book:hover { background: var(--hover); }
+.book.active { background: #f0e6d6; }
+.book-title .he { color: var(--muted); font-size: 13px; }
+.book-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+.viewer {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 22px 26px;
+  min-height: 300px;
+}
+.viewer h2 { margin: 0 0 6px; font-size: 24px; }
+.viewer h2 .he { color: var(--muted); font-weight: 400; }
+
+.muted { color: var(--muted); font-size: 14px; }
+
+.chapter { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 18px; }
+.chapter h3 { font-size: 13px; color: var(--accent); margin: 4px 0 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.verse { display: grid; grid-template-columns: 48px 1fr; gap: 12px; padding: 8px 0; border-bottom: 1px solid #f3efe7; }
+.vref { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 6px; }
+.cols { display: grid; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); gap: 18px; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  .cols { grid-template-columns: 1fr; }
+}
+.col { margin: 0; }
+.col.he {
+  font-size: 20px;
+  line-height: 1.9;
+  text-align: right;
+  font-family: 'Times New Roman', 'SBL Hebrew', 'Frank Ruehl', serif;
+}
+.col.en { font-size: 15px; line-height: 1.6; color: #2c2925; }
+.col sup { font-size: 0.6em; color: var(--muted); }
+
+/* edition picker */
+.edition-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 6px; }
+.edition-bar-label { font-size: 12px; color: var(--muted); }
+.edition-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.edition-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.edition-chip {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.edition-chip.on { background: #f0e6d6; border-color: #d9b38c; color: var(--ink); font-weight: 600; }
+.edition-chip.add { cursor: pointer; opacity: 0.75; }
+.edition-chip.add:hover { opacity: 1; border-color: #d9b38c; }
+.edition-chip.dragging { box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18); }
+.chip-grip { cursor: grab; color: var(--muted); user-select: none; touch-action: none; font-size: 11px; }
+.chip-grip:active { cursor: grabbing; }
+.edition-chip .chip-x {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+}
+.edition-chip .chip-x:hover { color: var(--accent); }
+.edition-lang { font-size: 10px; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 3px; }
+
+.vbody { display: flex; flex-direction: column; gap: 6px; }
+
+.commentary { margin-top: 2px; }
+.comm-toggle {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.comm-toggle:hover { text-decoration: underline; }
+
+.comm-body {
+  margin: 4px 0 4px;
+  padding: 8px 12px;
+  border-left: 3px solid #e0cfb4;
+  background: #fbf7f0;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.comm-item { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; row-gap: 2px; }
+.comm-item .comm-src {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  font-weight: 700;
+}
+.comm-item .comm-ref { color: var(--muted); font-weight: 400; text-transform: none; }
+.comm-item .he { margin: 0; font-size: 17px; line-height: 1.85; text-align: right; font-family: 'Times New Roman', serif; }
+.comm-item .en { margin: 0; font-size: 14px; line-height: 1.55; color: #3a352f; }
+@media (max-width: 860px) {
+  .comm-item { grid-template-columns: 1fr; }
+}
+
+/* navigational links (real anchors → cmd/middle-click opens a new tab) */
+.comm-link { color: var(--accent); text-decoration: none; cursor: pointer; font-size: 12px; }
+.comm-link:hover { text-decoration: underline; }
+.comm-item .comm-src.comm-link { display: inline-block; }
+.baselinks { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 2px; }
+
+/* brief highlight when a verse is navigated to */
+.verse.flash { animation: flash 1.6s ease-out; border-radius: 6px; }
+@keyframes flash {
+  from { background: #fbeec8; }
+  to { background: transparent; }
+}

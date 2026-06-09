@@ -1,0 +1,37 @@
+{
+  "name": "torah-llm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "fetch:subset": "tsx scripts/fetch-subset.ts",
+    "build:master": "tsx scripts/build-master.ts",
+    "slice": "tsx scripts/slice-db.ts",
+    "data": "npm run fetch:subset && npm run build:master && npm run slice",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@sqlite.org/sqlite-wasm": "^3.49.0-build1",
+    "comlink": "^4.4.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router": "^7.17.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "better-sqlite3": "^11.8.1",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.2",
+    "vite": "^6.1.0"
+  }
+}

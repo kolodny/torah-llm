@@ -1,0 +1,22 @@
+{
+  "_comment": "Pinned source versions so builds are reproducible WITHOUT committing the corpora (which would bloat clones — Orayta alone is ~300MB). The fetched data lives in ./data (gitignored); adapters fetch from the refs below. Update a ref here to move a source to a new version.",
+  "sources": {
+    "sefaria": {
+      "type": "gcs",
+      "bucket": "https://storage.googleapis.com/sefaria-export",
+      "indexRepo": "Sefaria/Sefaria-Export",
+      "indexRef": "7c10a6afe11d1cd9bb7a4667d89d27173b2797d8",
+      "note": "Text lives in a public, mutable GCS bucket (regenerated ~monthly). indexRef pins the Sefaria-Export books.json snapshot as a version marker; the bucket itself is not content-addressable."
+    },
+    "oshb": {
+      "type": "github-raw",
+      "repo": "openscriptures/morphhb",
+      "ref": "3d15126fb1ef74867fc1434be1942e837932691f"
+    },
+    "orayta": {
+      "type": "github-raw",
+      "repo": "MosheWagner/Orayta-Books",
+      "ref": "b6ded5d58e71a6701967319de7ebdd5c5dd4302e"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "Sefaria",
+    "Tanakh",
+    "Torah",
+    "Bereshit",
+    "Leviticus",
+    "Deuteronomy",
+    "Mishnah",
+    "Midrash",
+    "Talmud",
+    "Daf",
+    "Perek",
+    "Pasuk",
+    "nikud",
+    "heTitle",
+    "heCategory",
+    "OPFS",
+    "sqlite",
+    "comlink",
+    "drizzle",
+    "tsx",
+    "vite",
+    "esnext",
+    "rowid",
+    "mkolodny"
+  ]
+}
