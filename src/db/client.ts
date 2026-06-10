@@ -153,6 +153,21 @@ export async function getLinks(tocId: string): Promise<Record<string, LinkRef[]>
   });
 }
 
+/** A book's section names (e.g. ['Chapter','Verse'], ['Daf','Line'], ['Siman','Seif']) for labeling. */
+export async function getMeta(tocId: string): Promise<{ sectionNames: string[]; heSectionNames: string[] }> {
+  return withApi(async (api) => {
+    const rows = (await api.exec('SELECT schema FROM meta WHERE toc_id = ?', [tocId])) as unknown as {
+      schema: string;
+    }[];
+    try {
+      const s = rows.length ? JSON.parse(rows[0].schema) : {};
+      return { sectionNames: s.sectionNames ?? [], heSectionNames: s.heSectionNames ?? [] };
+    } catch {
+      return { sectionNames: [], heSectionNames: [] };
+    }
+  });
+}
+
 export async function downloadBook(tocId: string, onProgress?: (p: Progress) => void) {
   const name = sliceUrlPath(tocId);
   await withApi((api) =>
@@ -173,6 +188,9 @@ export function ensureBook(tocId: string, onProgress?: (p: Progress) => void): P
       if (!has) {
         await api.merge(`${base}db/${name}`, `/${name}`, onProgress ? proxy(onProgress) : undefined);
       }
+    }).catch((e) => {
+      ensuring.delete(tocId); // don't cache a failure — allow retry on the next navigation
+      throw e;
     });
     ensuring.set(tocId, p);
   }

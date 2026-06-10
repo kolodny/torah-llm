@@ -2,7 +2,7 @@
   --bg: #faf8f4;
   --panel: #ffffff;
   --ink: #1c1a17;
-  --muted: #8a8378;
+  --muted: #6b655c;
   --accent: #8a5a2b;
   --line: #e7e1d6;
   --hover: #f3eee5;
@@ -10,6 +10,9 @@
 }
 
 * { box-sizing: border-box; }
+
+/* visible keyboard focus everywhere (controls are borderless/transparent) */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
 body {
   margin: 0;
@@ -61,14 +64,24 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 }
 
 .cat-label {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
-  padding: 10px 4px 4px;
+  padding: 8px 4px 4px;
   font-weight: 700;
 }
+.cat-label:hover { color: var(--accent); }
 .cat-label .he { letter-spacing: 0; text-transform: none; }
+.cat-arrow { color: var(--accent); }
+.cat-count { color: #c9c0b0; font-weight: 400; }
 
 .book {
   display: flex;
@@ -201,6 +214,29 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 .comm-link:hover { text-decoration: underline; }
 .comm-item .comm-src.comm-link { display: inline-block; }
 .baselinks { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 2px; }
+
+/* verse cross-references — collapsed toggle + type-grouped navigable list */
+.verse-links { margin-top: 2px; }
+.links-toggle {
+  border: 0; background: transparent; color: var(--accent); cursor: pointer;
+  font-size: 12px; padding: 2px 0; text-align: left;
+}
+.links-toggle:hover { text-decoration: underline; }
+.links-summary { color: var(--muted); }
+.links-body {
+  margin: 4px 0; padding: 6px 12px; border-left: 3px solid #e0cfb4;
+  background: #fbf7f0; border-radius: 0 6px 6px 0;
+}
+.link-group { margin: 2px 0 8px; }
+.link-group:last-child { margin-bottom: 2px; }
+.link-group-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--accent); font-weight: 700; margin-bottom: 2px;
+}
+.link-list { list-style: none; margin: 0; padding: 0; columns: 2; }
+.link-list li { break-inside: avoid; margin: 1px 0; }
+.link-list .comm-ref { color: var(--muted); }
+@media (max-width: 860px) { .link-list { columns: 1; } }
 
 /* brief highlight when a verse is navigated to */
 .verse.flash { animation: flash 1.6s ease-out; border-radius: 6px; }

@@ -6,7 +6,12 @@
       "bucket": "https://storage.googleapis.com/sefaria-export",
       "indexRepo": "Sefaria/Sefaria-Export",
       "indexRef": "7c10a6afe11d1cd9bb7a4667d89d27173b2797d8",
-      "note": "Text lives in a public, mutable GCS bucket (regenerated ~monthly). indexRef pins the Sefaria-Export books.json snapshot as a version marker; the bucket itself is not content-addressable."
+      "note": "FULL corpus: every book's merged Hebrew + English fetched from this GCS bucket (mutable, ~monthly). indexRef pins the Sefaria-Export books.json snapshot as a version marker; the bucket itself is not content-addressable."
+    },
+    "sefaria-links": {
+      "type": "gcs",
+      "bucket": "https://storage.googleapis.com/sefaria-export",
+      "note": "The links/ CSV export (18 shards, ~657MB) — the full cross-reference graph. Same bucket/version marker as sefaria."
     },
     "orayta": {
       "type": "github-raw",
@@ -23,7 +28,7 @@
       "type": "github-raw",
       "repo": "Dicta-Israel-Center-for-Text-Analysis/Talmud-Bavli-with-Nikud",
       "ref": "8772e90fac22060ea423c168c0f95868653f6ef1",
-      "note": "Vocalized Babylonian Talmud (CC BY-SA, Dicta/Israel). ktiv-haser .txt per tractate; subset: Berakhot, Megillah."
+      "note": "Vocalized Babylonian Talmud (CC BY-SA, Dicta/Israel). ktiv-haser .txt per tractate; FULL Shas (37 tractates, auto-discovered from the repo tree)."
     },
     "dicta-library": {
       "type": "https-zip",

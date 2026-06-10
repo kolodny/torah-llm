@@ -1,111 +1,127 @@
-// Sefaria source adapter.
+// Sefaria source adapter — FULL corpus.
 //
-// Builds the CANONICAL catalog (the Sefaria TOC is our spine: books keyed by title, categories
-// by path — no source prefix) and contributes multiple EDITIONS per book: several languages /
-// versions (Hebrew, English JPS 1917, a French translation, …). Other sources attach their own
-// editions to these same canonical book ids. Also derives commentary→base links between books.
+// Walks Sefaria's table_of_contents.json (our canonical spine: books keyed by title, categories by
+// path) and, for EVERY book, contributes its merged Hebrew + merged English editions. Refs are
+// computed from each text's sectionNames, which covers Chapter:Verse, Talmud Daf:Line, Mishnah, and
+// multi-level commentaries. Books whose text has no flat sectionNames (exotic nested schemas) yield
+// no parseable refs and are skipped. Commentary→base links are derived from the TOC's
+// base_text_titles; broader cross-corpus links come from the links CSV (see sefaria-links.ts).
 
 import { resolve, dirname } from 'node:path';
-import {
-  readFileSync,
-  readdirSync,
-  mkdirSync,
-  writeFileSync,
-  existsSync,
-  type Dirent,
-} from 'node:fs';
-import type { SourceAdapter, IngestCtx } from './types.ts';
+import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import type { SourceAdapter, IngestCtx, TocInsert } from './types.ts';
 import { pins } from './pins.ts';
 
 const SRC = 'sefaria';
 const root = resolve(import.meta.dirname, '../../');
 const DIR = resolve(root, 'data/sefaria');
 const TOC_PATH = resolve(DIR, 'table_of_contents.json');
-const SCHEMAS_DIR = resolve(DIR, 'schemas');
 const JSON_DIR = resolve(DIR, 'json');
-
 const BUCKET = pins.sefaria?.bucket ?? 'https://storage.googleapis.com/sefaria-export';
-const TORAH = 'Tanakh/Torah';
-const RASHI = 'Tanakh/Rishonim on Tanakh/Rashi/Torah';
-const BOOKS = ['Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy'];
+const MAX_BOOKS = Number(process.env.SEFARIA_MAX || Infinity); // cap for validation runs
 
-// An edition to fetch: GCS language folder + version filename, and how we label it.
-type Ed = { dir: string; file: string; lang: string; title: string };
-
-// Curated editions for the Torah base books — several languages/versions to show Sefaria's range.
-const TORAH_EDITIONS: Ed[] = [
-  { dir: 'Hebrew', file: 'merged.json', lang: 'he', title: 'Hebrew (Sefaria)' },
-  { dir: 'English', file: 'merged.json', lang: 'en', title: 'English (Sefaria)' },
-  { dir: 'English', file: 'The Holy Scriptures A New Translation JPS 1917.json', lang: 'en', title: 'JPS 1917' },
-  {
-    dir: 'English',
-    file: 'Traduction française sous la direction du Grand-Rabbin Zadoc Kahn [fr].json',
-    lang: 'fr',
-    title: 'Français (Zadoc Kahn)',
-  },
-];
-// Commentary (Rashi): just the merged Hebrew + English.
-const MERGED_EDITIONS: Ed[] = [
+const LANGS = [
   { dir: 'Hebrew', file: 'merged.json', lang: 'he', title: 'Hebrew (Sefaria)' },
   { dir: 'English', file: 'merged.json', lang: 'en', title: 'English (Sefaria)' },
 ];
+// Curated extra editions kept beyond merged He+En, for the books that had them.
+const TORAH = ['Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy'];
+const EXTRAS: Record<string, { dir: string; file: string; lang: string; title: string }[]> = Object.fromEntries(
+  TORAH.map((b) => [
+    b,
+    [
+      { dir: 'English', file: 'The Holy Scriptures A New Translation JPS 1917.json', lang: 'en', title: 'JPS 1917' },
+      { dir: 'English', file: 'Traduction française sous la direction du Grand-Rabbin Zadoc Kahn [fr].json', lang: 'fr', title: 'Français (Zadoc Kahn)' },
+    ],
+  ])
+);
+const editionsFor = (title: string) => [...LANGS, ...(EXTRAS[title] ?? [])];
 
-type Spec = { title: string; gcsBase: string; editions: Ed[] };
-const SPECS: Spec[] = [
-  ...BOOKS.map((b) => ({ title: b, gcsBase: `${TORAH}/${b}`, editions: TORAH_EDITIONS })),
-  ...BOOKS.map((b) => ({ title: `Rashi on ${b}`, gcsBase: `${RASHI}/Rashi on ${b}`, editions: MERGED_EDITIONS })),
-];
+type Book = { title: string; heTitle: string | null; gcsBase: string; base: string | null };
 
-const localJsonPath = (gcsBase: string, e: Ed) => resolve(JSON_DIR, gcsBase, e.dir, e.file);
-
-async function fetchSubset() {
-  const want: { rel: string; optional: boolean }[] = [{ rel: 'table_of_contents.json', optional: false }];
-  for (const b of BOOKS) want.push({ rel: `schemas/${b}.json`, optional: false });
-  for (const s of SPECS) for (const e of s.editions) {
-    want.push({ rel: `json/${s.gcsBase}/${e.dir}/${e.file}`, optional: true });
-  }
-
-  let fetched = 0;
-  let unavailable = 0;
-  for (const { rel, optional } of want) {
-    const dest = resolve(DIR, rel);
-    if (existsSync(dest)) continue;
-    const url = `${BUCKET}/${rel.split('/').map(encodeURIComponent).join('/')}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      if (optional) {
-        unavailable++;
-        continue;
-      }
-      throw new Error(`HTTP ${res.status} for ${url}`);
+// Walk the TOC: emit every node via onNode, return every book with its GCS path + commentary base.
+function walkToc(onNode?: (row: TocInsert) => void): Book[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const toc = JSON.parse(readFileSync(TOC_PATH, 'utf8')) as any[];
+  const books: Book[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const visit = (node: any, catPath: string[], parentId: string | null) => {
+    const title: string | undefined = node.title;
+    const category: string | undefined = node.category;
+    const id = title ?? (parentId ? `${parentId} / ${category}` : category);
+    if (!id) return;
+    onNode?.({
+      id,
+      parent_id: parentId,
+      kind: node.contents ? 'category' : 'book',
+      title_en: title ?? null,
+      title_he: node.heTitle ?? null,
+      category_en: category ?? null,
+      category_he: node.heCategory ?? null,
+      order_index: node.order ?? null,
+    });
+    if (node.contents) {
+      const childPath = category ? [...catPath, category] : catPath;
+      for (const child of node.contents) visit(child, childPath, id);
+    } else if (title) {
+      books.push({
+        title,
+        heTitle: node.heTitle ?? null,
+        gcsBase: [...catPath, title].join('/'),
+        base:
+          node.dependence === 'Commentary' && Array.isArray(node.base_text_titles)
+            ? node.base_text_titles[0] ?? null
+            : null,
+      });
     }
-    mkdirSync(dirname(dest), { recursive: true });
-    writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
-    fetched++;
-  }
-  console.log(`  sefaria: fetched ${fetched} file(s)${unavailable ? `, ${unavailable} edition(s) unavailable` : ''}`);
+  };
+  for (const top of toc) visit(top, [], null);
+  return books;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function loadSchemas(): Map<string, any> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const map = new Map<string, any>();
-  let names: string[] = [];
-  try {
-    names = readdirSync(SCHEMAS_DIR);
-  } catch {
-    return map;
+const localPath = (gcsBase: string, dir: string, file: string) => resolve(JSON_DIR, gcsBase, dir, file);
+
+async function pool<T>(items: T[], n: number, worker: (item: T) => Promise<void>) {
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: n }, async () => {
+      while (i < items.length) await worker(items[i++]);
+    })
+  );
+}
+
+async function fetchSubset() {
+  if (!existsSync(TOC_PATH)) {
+    const res = await fetch(`${BUCKET}/table_of_contents.json`);
+    if (!res.ok) throw new Error(`HTTP ${res.status} for table_of_contents.json`);
+    mkdirSync(DIR, { recursive: true });
+    writeFileSync(TOC_PATH, Buffer.from(await res.arrayBuffer()));
   }
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    try {
-      const json = JSON.parse(readFileSync(resolve(SCHEMAS_DIR, name), 'utf8'));
-      if (json?.title) map.set(String(json.title).toLowerCase(), json);
-    } catch {
-      /* skip */
+  const books = walkToc().slice(0, MAX_BOOKS);
+  const targets: { url: string; dest: string }[] = [];
+  for (const b of books)
+    for (const e of editionsFor(b.title)) {
+      const dest = localPath(b.gcsBase, e.dir, e.file);
+      if (existsSync(dest)) continue;
+      const rel = `json/${b.gcsBase}/${e.dir}/${e.file}`;
+      targets.push({ url: `${BUCKET}/${rel.split('/').map(encodeURIComponent).join('/')}`, dest });
     }
-  }
-  return map;
+  let done = 0;
+  let ok = 0;
+  await pool(targets, 24, async ({ url, dest }) => {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+        ok++;
+      }
+    } catch {
+      /* transient network error — skip; rerun is resumable (skip-existing) */
+    }
+    if (++done % 1000 === 0) console.log(`    sefaria fetch: ${done}/${targets.length} (${ok} ok)…`);
+  });
+  console.log(`  sefaria: fetched ${ok} merged file(s) for ${books.length} books`);
 }
 
 function format(n: number, sectionName?: string): string {
@@ -172,64 +188,49 @@ function editionInfo(json: any): string | null {
 }
 
 function ingest(ctx: IngestCtx) {
-  // Canonical TOC spine (ids are titles / category paths, no source prefix).
-  const commentaryBase = new Map<string, string>(); // commentary title -> base title
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const toc = JSON.parse(readFileSync(TOC_PATH, 'utf8')) as any[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const walk = (node: any, parentId: string | null) => {
-    const title: string | undefined = node.title;
-    const category: string | undefined = node.category;
-    const id = title ?? (parentId ? `${parentId} / ${category}` : category);
-    if (!id) return;
-    ctx.toc({
-      id,
-      parent_id: parentId,
-      kind: node.contents ? 'category' : 'book',
-      title_en: title ?? null,
-      title_he: node.heTitle ?? null,
-      category_en: category ?? null,
-      category_he: node.heCategory ?? null,
-      order_index: node.order ?? null,
-    });
-    if (node.dependence === 'Commentary' && Array.isArray(node.base_text_titles) && node.base_text_titles[0]) {
-      commentaryBase.set(id, node.base_text_titles[0]);
-    }
-    if (node.contents) for (const child of node.contents) walk(child, id);
-  };
-  for (const top of toc) walk(top, null);
+  const books = walkToc((row) => ctx.toc(row)); // emit the full canonical spine
+  const commentaryBase = new Map<string, string>();
+  for (const b of books) if (b.base) commentaryBase.set(b.title, b.base);
 
-  // Editions + content.
-  const schemas = loadSchemas();
   const refsByBook = new Map<string, Set<string>>();
   let editionCount = 0;
-  for (const spec of SPECS) {
-    const schemaTop = schemas.get(spec.title.toLowerCase());
-    let sectionNames: string[] | undefined = schemaTop?.schema?.sectionNames;
-    let heSectionNames: string[] | undefined = schemaTop?.schema?.heSectionNames;
-    const refs = refsByBook.get(spec.title) ?? new Set<string>();
-
-    spec.editions.forEach((e, i) => {
-      const path = localJsonPath(spec.gcsBase, e);
+  let bookCount = 0;
+  for (const b of books.slice(0, MAX_BOOKS)) {
+    const refs = new Set<string>();
+    let sectionNames: string[] | undefined;
+    let heSectionNames: string[] | undefined;
+    editionsFor(b.title).forEach((e, i) => {
+      const path = localPath(b.gcsBase, e.dir, e.file);
       if (!existsSync(path)) return;
-      const json = JSON.parse(readFileSync(path, 'utf8'));
-      const schema = schemaTop?.schema ?? { sectionNames: json.sectionNames };
-      sectionNames ??= json.sectionNames;
-      const editionId = `${SRC}:${spec.title}:${e.lang}:${e.title}`;
-      ctx.edition({ id: editionId, tocId: spec.title, source: SRC, lang: e.lang, title: e.title, info: editionInfo(json), orderIndex: i });
-      editionCount++;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let json: any;
+      try {
+        json = JSON.parse(readFileSync(path, 'utf8'));
+      } catch {
+        return;
+      }
+      const schema = { sectionNames: json.sectionNames };
+      const rows: { ref: string; value: string }[] = [];
       for (const { path: p, value } of flatten(json.text)) {
         if (!value.trim()) continue;
         const ref = createRefPath(schema, p);
-        if (!ref) continue;
-        ctx.content({ editionId, tocId: spec.title, ref, text: value });
+        if (ref) rows.push({ ref, value });
+      }
+      if (!rows.length) return; // no parseable refs (exotic schema) — skip this edition
+      sectionNames ??= json.sectionNames;
+      heSectionNames ??= json.heSectionNames;
+      const editionId = `${SRC}:${b.title}:${e.lang}:${e.title}`;
+      ctx.edition({ id: editionId, tocId: b.title, source: SRC, lang: e.lang, title: e.title, info: editionInfo(json), orderIndex: i });
+      editionCount++;
+      for (const { ref, value } of rows) {
+        ctx.content({ editionId, tocId: b.title, ref, text: value });
         refs.add(ref);
       }
     });
-
     if (refs.size) {
-      refsByBook.set(spec.title, refs);
-      ctx.meta({ tocId: spec.title, schema: { sectionNames: sectionNames ?? null, heSectionNames: heSectionNames ?? null } });
+      refsByBook.set(b.title, refs);
+      bookCount++;
+      ctx.meta({ tocId: b.title, schema: { sectionNames: sectionNames ?? null, heSectionNames: heSectionNames ?? null } });
     }
   }
 
@@ -249,7 +250,7 @@ function ingest(ctx: IngestCtx) {
       links++;
     }
   }
-  console.log(`  sefaria: ${editionCount} editions across ${refsByBook.size} books, ${links} links`);
+  console.log(`  sefaria: ${editionCount} editions across ${bookCount} books, ${links} commentary links`);
 }
 
 export const sefaria: SourceAdapter = { id: SRC, name: 'Sefaria', fetchSubset, ingest };

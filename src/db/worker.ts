@@ -25,6 +25,8 @@ const bootUrl = `${import.meta.env.BASE_URL}db/${TOC_DB}`;
 const init = (async () => {
   const sqlite3 = await sqlite3InitModule({ print: console.log, printErr: console.error });
   const pool = await sqlite3.installOpfsSAHPoolVfs({ name: 'torah-llm' });
+  // Default pool holds ~1-2 DBs; merge needs the boot DB + a slice + temp slots simultaneously.
+  await pool.reserveMinimumCapacity(8);
   return { sqlite3, pool };
 })();
 
@@ -47,8 +49,18 @@ async function streamInto(pool: any, path: string, url: string, onProgress?: (p:
   });
 }
 
-// Ensure the boot DB is present, current, and open. Runs once; every api method awaits it.
-const boot = (async () => {
+// Ensure the boot DB is present, current, and open. Retryable: a failed boot (offline / transient
+// fetch error) re-arms so the next call tries again instead of poisoning the worker permanently.
+let bootP: Promise<void> | null = null;
+function boot(): Promise<void> {
+  if (!bootP)
+    bootP = doBoot().catch((e) => {
+      bootP = null;
+      throw e;
+    });
+  return bootP;
+}
+async function doBoot() {
   const { pool } = await init;
   const openBoot = () => {
     db = new pool.OpfsSAHPoolDb(BOOT_PATH);
@@ -69,7 +81,7 @@ const boot = (async () => {
     await streamInto(pool, BOOT_PATH, bootUrl);
     openBoot();
   }
-})();
+}
 
 const api = {
   async version() {
@@ -79,7 +91,7 @@ const api = {
 
   /** Run SQL; returns rows as objects (empty for non-SELECT). */
   async exec(sql: string, params: unknown[] = []) {
-    await boot;
+    await boot();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const resultRows: any[] = [];
     db.exec({ sql, bind: params.length ? params : undefined, rowMode: 'object', resultRows });
@@ -89,14 +101,14 @@ const api = {
   /** Download a book slice (if not already present) and merge its rows into the open DB. */
   async merge(url: string, path: string, onProgress?: (p: Progress) => void) {
     const { pool } = await init;
-    await boot;
+    await boot();
     if (!pool.getFileNames().includes(path)) await streamInto(pool, path, url, onProgress);
-    db.exec(`ATTACH DATABASE '${path}' AS merge`);
+    db.exec(`ATTACH DATABASE '${path.replace(/'/g, "''")}' AS merge`); // escape ' (book ids like "Ba'al HaTurim")
     try {
-      db.exec(`INSERT OR IGNORE INTO editions SELECT * FROM merge.editions`);
-      db.exec(`INSERT OR IGNORE INTO content SELECT * FROM merge.content`);
-      db.exec(`INSERT OR IGNORE INTO meta SELECT * FROM merge.meta`);
-      db.exec(`INSERT OR IGNORE INTO links SELECT * FROM merge.links`);
+      db.exec(`INSERT OR IGNORE INTO editions (id,toc_id,source,lang,title,info,order_index) SELECT id,toc_id,source,lang,title,info,order_index FROM merge.editions`);
+      db.exec(`INSERT OR IGNORE INTO content (id,edition_id,toc_id,ref,text) SELECT id,edition_id,toc_id,ref,text FROM merge.content`);
+      db.exec(`INSERT OR IGNORE INTO meta (toc_id,schema) SELECT toc_id,schema FROM merge.meta`);
+      db.exec(`INSERT OR IGNORE INTO links (id,from_id,from_ref,to_id,to_ref,connection_type) SELECT id,from_id,from_ref,to_id,to_ref,connection_type FROM merge.links`);
     } finally {
       db.exec(`DETACH DATABASE merge`);
     }

@@ -54,6 +54,8 @@ for (const adapter of adapters) {
 
 // Drop links whose endpoints have no content (generalizes "both endpoints in the master DB" across
 // all sources — adapters may derive links liberally; this keeps only the ones that resolve).
+// A (toc_id, ref) index makes the millions of endpoint lookups in the prune fast.
+db.exec(`CREATE INDEX IF NOT EXISTS content_toc_ref ON content(toc_id, ref)`);
 db.exec(`
   DELETE FROM links
   WHERE NOT EXISTS (SELECT 1 FROM content c WHERE c.toc_id = links.from_id AND c.ref = links.from_ref)

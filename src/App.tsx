@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import {
   DndContext,
@@ -23,6 +23,7 @@ import {
   getEditions,
   getContent,
   getLinks,
+  getMeta,
   ensureBook,
   wipe,
   sqliteVersion,
@@ -37,6 +38,19 @@ function searchFor(book: string, ref: string | null): string {
   p.set('book', book);
   if (ref) p.set('ref', ref);
   return `?${p.toString()}`;
+}
+
+// Sefaria's embedded cross-reference anchors carry the CANONICAL ref in `data-ref` — e.g.
+// "Tosafot on Bava Kamma 22b:2", "Deuteronomy 6:4-9", "I Chronicles 1:7": a book title (may contain
+// spaces/parens) + a trailing ref token. (The `href` is an internal slug like
+// "/Tosafot_on_Bava_Kamma.22b.2.1" — do NOT parse that.) Split at the last space; a range → start verse.
+function parseSefariaRef(dataRef: string): { book: string; ref: string } | null {
+  const s = (dataRef || '').trim();
+  const i = s.lastIndexOf(' ');
+  if (i < 1) return null;
+  const book = s.slice(0, i).trim();
+  const ref = s.slice(i + 1).split(/[-–]/)[0].trim();
+  return book && ref ? { book, ref } : null;
 }
 
 type TreeNode = TocRow & { children: TreeNode[] };
@@ -67,8 +81,14 @@ const fmtBytes = (n: number | null) => {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 
-const refNum = (ref: string) => ref.split(':').map((x) => Number(x) || 0);
-const depth = (ref: string) => ref.split(':').length;
+// Numeric sort key for a ref, handling Talmud daf ("2a"/"2b") as well as chapter:verse[:comment].
+const refNum = (ref: string) =>
+  ref.split(':').map((x) => {
+    const m = /^(\d+)([ab])?$/.exec(x);
+    return m ? Number(m[1]) * 2 + (m[2] === 'b' ? 1 : 0) : Number(x) || 0;
+  });
+// Scripts rendered right-to-left (Hebrew, Aramaic, Yiddish, Judeo-Arabic).
+const RTL_LANGS = new Set(['he', 'arc', 'yi', 'ar', 'jrb']);
 
 export default function App() {
   const [params, setParams] = useSearchParams();
@@ -82,8 +102,9 @@ export default function App() {
   const [editions, setEditions] = useState<Edition[]>([]);
   const [content, setContent] = useState<ContentRow[] | null>(null);
   const [links, setLinks] = useState<Record<string, LinkRef[]>>({});
+  const [sections, setSections] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<number | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refreshLocal = useCallback(async () => setLocal(new Set(await getLocalBookIds())), []);
@@ -105,6 +126,7 @@ export default function App() {
       setContent(null);
       setEditions([]);
       setLinks({});
+      setSections([]);
       return;
     }
     let cancelled = false;
@@ -117,18 +139,22 @@ export default function App() {
       setProgress(null);
       try {
         await ensureBook(book, (p) => {
-          if (p.total) setProgress(Math.round((p.received / p.total) * 100));
+          setProgress(
+            p.total ? `${Math.round((p.received / p.total) * 100)}%` : `${(p.received / 1e6).toFixed(1)} MB`
+          );
         });
         await refreshLocal();
-        const [eds, rows, linkMap] = await Promise.all([
+        const [eds, rows, linkMap, meta] = await Promise.all([
           getEditions(book),
           getContent(book),
           getLinks(book),
+          getMeta(book),
         ]);
         if (cancelled) return;
         setEditions(eds);
         setContent(rows);
         setLinks(linkMap);
+        setSections(meta.sectionNames);
       } catch (e) {
         if (!cancelled) setError(String(e));
       } finally {
@@ -181,6 +207,18 @@ export default function App() {
 
   const tree = useMemo(() => (toc ? buildTree(toc) : []), [toc]);
   const selectedNode = useMemo(() => toc?.find((t) => t.id === book) ?? null, [toc, book]);
+  // Ancestor category ids of the selected book — these stay expanded so the active book is visible.
+  const openPath = useMemo(() => {
+    const s = new Set<string>();
+    if (!toc || !book) return s;
+    const byId = new Map(toc.map((t) => [t.id, t] as const));
+    let cur = byId.get(book)?.parent_id ?? null;
+    while (cur) {
+      s.add(cur);
+      cur = byId.get(cur)?.parent_id ?? null;
+    }
+    return s;
+  }, [toc, book]);
 
   const onWipe = useCallback(async () => {
     await wipe();
@@ -211,7 +249,7 @@ export default function App() {
         <nav className="catalog" aria-label="Catalog">
           {!toc && <p className="muted">Loading catalog…</p>}
           {tree.map((node) => (
-            <Tree key={node.id} node={node} local={local} selected={book} depth={0} />
+            <Tree key={node.id} node={node} local={local} selected={book} depth={0} openPath={openPath} />
           ))}
         </nav>
 
@@ -225,7 +263,7 @@ export default function App() {
               </h2>
               {busy && (
                 <p className="muted" data-testid="status">
-                  {progress !== null ? `Downloading… ${progress}%` : 'Loading…'}
+                  {progress !== null ? `Downloading… ${progress}` : 'Loading…'}
                 </p>
               )}
               {editions.length > 0 && (
@@ -237,7 +275,7 @@ export default function App() {
                   editions={editions}
                   selected={shown}
                   links={links}
-                  onCommentaryLoaded={refreshLocal}
+                  sections={sections}
                 />
               )}
             </>
@@ -253,24 +291,16 @@ function Tree({
   local,
   selected,
   depth,
+  openPath,
 }: {
   node: TreeNode;
   local: Set<string>;
   selected: string | null;
   depth: number;
+  openPath: Set<string>;
 }) {
   if (node.kind === 'category') {
-    return (
-      <div className="cat">
-        <div className="cat-label" style={{ paddingLeft: depth * 14 }}>
-          {node.category_en}
-          {node.category_he && <span className="he"> {node.category_he}</span>}
-        </div>
-        {node.children.map((c) => (
-          <Tree key={c.id} node={c} local={local} selected={selected} depth={depth + 1} />
-        ))}
-      </div>
-    );
+    return <Category node={node} local={local} selected={selected} depth={depth} openPath={openPath} />;
   }
   const isLocal = local.has(node.id);
   return (
@@ -289,6 +319,45 @@ function Tree({
         {node.edition_count > 1 ? ` · ${node.edition_count} ed.` : ''}
       </span>
     </Link>
+  );
+}
+
+// Collapsible category — collapsed by default; auto-opens the selected book's ancestor chain.
+function Category({
+  node,
+  local,
+  selected,
+  depth,
+  openPath,
+}: {
+  node: TreeNode;
+  local: Set<string>;
+  selected: string | null;
+  depth: number;
+  openPath: Set<string>;
+}) {
+  const [override, setOverride] = useState<boolean | null>(null);
+  // openPath (ancestors of the active book) forces-open so the selected book is always visible;
+  // a manual toggle only adds expansion elsewhere (it can't hide the active path).
+  const open = openPath.has(node.id) || (override ?? false);
+  return (
+    <div className="cat">
+      <button
+        type="button"
+        className="cat-label"
+        style={{ paddingLeft: depth * 14 }}
+        onClick={() => setOverride(!open)}
+        aria-expanded={open}
+      >
+        <span className="cat-arrow">{open ? '▾' : '▸'}</span> {node.category_en}
+        {node.category_he && <span className="he"> {node.category_he}</span>}
+        <span className="cat-count"> {node.children.length}</span>
+      </button>
+      {open &&
+        node.children.map((c) => (
+          <Tree key={c.id} node={c} local={local} selected={selected} depth={depth + 1} openPath={openPath} />
+        ))}
+    </div>
   );
 }
 
@@ -397,13 +466,13 @@ function Verses({
   editions,
   selected,
   links,
-  onCommentaryLoaded,
+  sections,
 }: {
   rows: ContentRow[];
   editions: Edition[];
   selected: string[];
   links: Record<string, LinkRef[]>;
-  onCommentaryLoaded: () => void;
+  sections: string[];
 }) {
   const langOf = useMemo(() => {
     const m = new Map<string, string>();
@@ -439,26 +508,41 @@ function Verses({
     return { byRef, grouped: [...grouped.entries()] };
   }, [rows]);
 
+  // Make Sefaria's embedded refLink anchors (in the verse/footnote HTML) navigate via the router.
+  const [, setSearchParams] = useSearchParams();
+  const onRefClick = useCallback(
+    (e: MouseEvent<HTMLDivElement>) => {
+      const a = (e.target as HTMLElement).closest('a.refLink');
+      if (!a) return;
+      e.preventDefault(); // hrefs are Sefaria-internal slugs ("/Book.Daf"); never let them navigate
+      const parsed = parseSefariaRef(a.getAttribute('data-ref') || '');
+      if (!parsed) return;
+      const search = searchFor(parsed.book, parsed.ref);
+      if (e.metaKey || e.ctrlKey) window.open(search, '_blank');
+      else setSearchParams(new URLSearchParams(search.slice(1)));
+    },
+    [setSearchParams]
+  );
+
   return (
-    <div className="verses">
+    <div className="verses" onClick={onRefClick}>
       <p className="muted" data-testid="verse-count">
         {chapters.byRef.size} verses · {chapters.grouped.length} chapters
         {!selected.length && ' · add an edition above'}
       </p>
       {chapters.grouped.map(([ch, refs]) => (
         <section key={ch} className="chapter">
-          <h3>Chapter {ch}</h3>
+          <h3>{sections[0] ?? 'Chapter'} {ch}</h3>
           {refs.map((r) => {
             const texts = chapters.byRef.get(r)!;
             const vlinks = links[r];
-            const toCommentary = !!vlinks?.length && depth(vlinks[0].otherRef) > depth(r);
             return (
               <div className="verse" key={r} data-ref={r}>
                 <span className="vref">{r}</span>
                 <div className="vbody">
                   <div className="cols" style={{ ['--cols' as string]: selected.length || 1 }}>
                     {selected.map((id) => {
-                      const he = langOf.get(id) === 'he';
+                      const he = RTL_LANGS.has(langOf.get(id) ?? '');
                       return (
                         <p
                           key={id}
@@ -469,23 +553,7 @@ function Verses({
                       );
                     })}
                   </div>
-                  {vlinks?.length ? (
-                    toCommentary ? (
-                      <Commentary links={vlinks} refTag={r} onLoaded={onCommentaryLoaded} />
-                    ) : (
-                      <div className="baselinks">
-                        {vlinks.map((l) => (
-                          <Link
-                            key={`${l.otherId}-${l.otherRef}`}
-                            to={{ search: searchFor(l.otherId, l.otherRef) }}
-                            className="comm-link"
-                          >
-                            ↗ {l.otherId} {l.otherRef}
-                          </Link>
-                        ))}
-                      </div>
-                    )
-                  ) : null}
+                  {vlinks?.length ? <VerseLinks links={vlinks} refTag={r} /> : null}
                 </div>
               </div>
             );
@@ -496,87 +564,74 @@ function Verses({
   );
 }
 
-type CommentItem = { bookId: string; source: string; ref: string; he?: string; en?: string };
+// Cross-references for a verse: a collapsed, type-grouped list of links (commentary, reference,
+// targum, quotation, …) — each a navigable link, no inline text dump. (A verse can have hundreds.)
+const LINK_TYPE_LABEL: Record<string, string> = {
+  commentary: 'Commentary',
+  targum: 'Targum',
+  midrash: 'Midrash',
+  quotation: 'Quotation',
+  quotation_auto: 'Quotation',
+  reference: 'Reference',
+  related: 'Related',
+  'related passage': 'Related',
+  'mesorat hashas': 'Mesorat HaShas',
+  'ein mishpat': 'Ein Mishpat',
+  'ein mishpat / ner mitsvah': 'Ein Mishpat',
+};
+const linkTypeLabel = (t: string) =>
+  LINK_TYPE_LABEL[t.toLowerCase()] ?? (t ? t[0].toUpperCase() + t.slice(1) : 'Reference');
 
-function Commentary({
-  links,
-  refTag,
-  onLoaded,
-}: {
-  links: LinkRef[];
-  refTag: string;
-  onLoaded: () => void;
-}) {
+function VerseLinks({ links, refTag }: { links: LinkRef[]; refTag: string }) {
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [items, setItems] = useState<CommentItem[] | null>(null);
-
-  const toggle = async () => {
-    if (open) {
-      setOpen(false);
-      return;
+  const groups = useMemo(() => {
+    const m = new Map<string, LinkRef[]>();
+    for (const l of links) {
+      const t = linkTypeLabel(l.connectionType || 'reference'); // merge synonyms (quotation/quotation_auto, related/related passage…)
+      (m.get(t) ?? m.set(t, []).get(t)!).push(l);
     }
-    setOpen(true);
-    if (items || loading) return;
-
-    setLoading(true);
-    try {
-      const byBook = new Map<string, string[]>();
-      for (const l of links) {
-        const arr = byBook.get(l.otherId) ?? [];
-        arr.push(l.otherRef);
-        byBook.set(l.otherId, arr);
-      }
-      const out: CommentItem[] = [];
-      for (const [bookId, refs] of byBook) {
-        await ensureBook(bookId);
-        const [eds, rows] = await Promise.all([getEditions(bookId), getContent(bookId)]);
-        const heEd = eds.find((e) => e.lang === 'he')?.id;
-        const enEd = eds.find((e) => e.lang === 'en')?.id;
-        const wanted = new Set(refs);
-        const byRef = new Map<string, { he?: string; en?: string }>();
-        for (const row of rows) {
-          if (!wanted.has(row.ref)) continue;
-          const e = byRef.get(row.ref) ?? {};
-          if (row.edition_id === heEd) e.he = row.text;
-          else if (row.edition_id === enEd) e.en = row.text;
-          byRef.set(row.ref, e);
-        }
-        const source = bookId.includes(' on ') ? bookId.split(' on ')[0] : bookId;
-        for (const r of refs) {
-          const e = byRef.get(r);
-          if (e) out.push({ bookId, source, ref: r, ...e });
-        }
-      }
-      out.sort((a, b) => a.ref.localeCompare(b.ref, undefined, { numeric: true }));
-      setItems(out);
-      onLoaded();
-    } finally {
-      setLoading(false);
-    }
-  };
+    for (const arr of m.values())
+      arr.sort(
+        (a, b) =>
+          a.otherId.localeCompare(b.otherId) ||
+          a.otherRef.localeCompare(b.otherRef, undefined, { numeric: true })
+      );
+    // Study-relevant types first; the large generic "reference" bucket last.
+    const rank: Record<string, number> = { Commentary: 0, Targum: 1, Midrash: 2, Quotation: 3, Related: 4, 'Mesorat HaShas': 5, Reference: 8 };
+    return [...m.entries()].sort((a, b) => (rank[a[0]] ?? 6) - (rank[b[0]] ?? 6) || b[1].length - a[1].length);
+  }, [links]);
 
   return (
-    <div className="commentary">
+    <div className="verse-links">
       <button
         type="button"
-        className="comm-toggle"
-        onClick={toggle}
+        className="links-toggle"
+        onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        data-testid={`comm-${refTag}`}
+        data-testid={`links-${refTag}`}
       >
-        {open ? '▾' : '▸'} {links.length} commentary
+        {open ? '▾' : '▸'} {links.length} link{links.length === 1 ? '' : 's'}
+        <span className="links-summary">
+          {' · '}
+          {groups.map(([t, arr]) => `${arr.length} ${t.toLowerCase()}`).join(' · ')}
+        </span>
       </button>
       {open && (
-        <div className="comm-body">
-          {loading && !items && <span className="muted">Loading commentary…</span>}
-          {items?.map((it, i) => (
-            <div className="comm-item" key={`${it.bookId}-${it.ref}-${i}`}>
-              <Link to={{ search: searchFor(it.bookId, it.ref) }} className="comm-link comm-src">
-                {it.source} <span className="comm-ref">{it.ref}</span> ↗
-              </Link>
-              {it.he && <p className="he" dir="rtl" dangerouslySetInnerHTML={{ __html: it.he }} />}
-              {it.en && <p className="en" dangerouslySetInnerHTML={{ __html: it.en }} />}
+        <div className="links-body">
+          {groups.map(([type, arr]) => (
+            <div className="link-group" key={type}>
+              <div className="link-group-head">
+                {type} <span className="muted">({arr.length})</span>
+              </div>
+              <ul className="link-list">
+                {arr.map((l, i) => (
+                  <li key={`${l.otherId}|${l.otherRef}|${i}`}>
+                    <Link to={{ search: searchFor(l.otherId, l.otherRef) }} className="comm-link">
+                      {l.otherId} <span className="comm-ref">{l.otherRef}</span> ↗
+                    </Link>
+                  </li>
+                ))}
+              </ul>
             </div>
           ))}
         </div>
