@@ -12,6 +12,7 @@ export type TocRow = {
   has_content: number; // 0 | 1
   edition_count: number;
   file_size: number | null;
+  content_version?: string | null; // hash of the book's slice rows; drives incremental re-merge
 };
 
 /** A version of a book's text in some language/source (e.g. "JPS 1917", "WLC"). */

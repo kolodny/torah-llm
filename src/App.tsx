@@ -22,6 +22,7 @@ import {
   getLocalBookIds,
   getEditions,
   getContent,
+  getSegment,
   getLinks,
   getMeta,
   ensureBook,
@@ -39,6 +40,38 @@ function searchFor(book: string, ref: string | null): string {
   if (ref) p.set('ref', ref);
   return `?${p.toString()}`;
 }
+
+// Inline "peek" preview state lives in the URL (?peek=<book>&pr=<ref>) so it's shareable and the
+// browser Back button dismisses it. Plain-click a cross-reference to preview it inline; cmd/ctrl-click
+// opens the full page instead — mirroring how Sefaria's connections panel works.
+function usePeek() {
+  const [, setParams] = useSearchParams();
+  const setPeek = useCallback(
+    (book: string, ref: string | null) =>
+      setParams((prev) => {
+        const p = new URLSearchParams(prev);
+        p.set('peek', book);
+        if (ref) p.set('pr', ref);
+        else p.delete('pr');
+        return p;
+      }),
+    [setParams]
+  );
+  const clearPeek = useCallback(
+    () =>
+      setParams((prev) => {
+        const p = new URLSearchParams(prev);
+        p.delete('peek');
+        p.delete('pr');
+        return p;
+      }),
+    [setParams]
+  );
+  return { setPeek, clearPeek };
+}
+
+// A modifier-click (cmd/ctrl) means "open the full page", not "preview inline".
+const opensFull = (e: MouseEvent) => e.metaKey || e.ctrlKey;
 
 // Sefaria's embedded cross-reference anchors carry the CANONICAL ref in `data-ref` — e.g.
 // "Tosafot on Bava Kamma 22b:2", "Deuteronomy 6:4-9", "I Chronicles 1:7": a book title (may contain
@@ -95,6 +128,8 @@ export default function App() {
   const book = params.get('book');
   const ref = params.get('ref');
   const edKey = params.getAll('ed').join(SEP); // selected editions live in the URL
+  const peek = params.get('peek'); // inline-preview target (book) + its ref (?pr=)
+  const peekRef = params.get('pr');
 
   const [toc, setToc] = useState<TocRow[] | null>(null);
   const [local, setLocal] = useState<Set<string>>(new Set());
@@ -245,7 +280,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="layout">
+      <div className={`layout${peek ? ' has-peek' : ''}`}>
         <nav className="catalog" aria-label="Catalog">
           {!toc && <p className="muted">Loading catalog…</p>}
           {tree.map((node) => (
@@ -281,6 +316,8 @@ export default function App() {
             </>
           )}
         </main>
+
+        {peek && <PeekPanel book={peek} refTag={peekRef} />}
       </div>
     </div>
   );
@@ -508,20 +545,20 @@ function Verses({
     return { byRef, grouped: [...grouped.entries()] };
   }, [rows]);
 
-  // Make Sefaria's embedded refLink anchors (in the verse/footnote HTML) navigate via the router.
-  const [, setSearchParams] = useSearchParams();
+  // Sefaria's embedded refLink anchors carry a canonical data-ref. Plain-click previews the target
+  // inline; cmd/ctrl-click opens its full page in a new tab. (hrefs are internal slugs — never followed.)
+  const { setPeek } = usePeek();
   const onRefClick = useCallback(
     (e: MouseEvent<HTMLDivElement>) => {
       const a = (e.target as HTMLElement).closest('a.refLink');
       if (!a) return;
-      e.preventDefault(); // hrefs are Sefaria-internal slugs ("/Book.Daf"); never let them navigate
+      e.preventDefault();
       const parsed = parseSefariaRef(a.getAttribute('data-ref') || '');
       if (!parsed) return;
-      const search = searchFor(parsed.book, parsed.ref);
-      if (e.metaKey || e.ctrlKey) window.open(search, '_blank');
-      else setSearchParams(new URLSearchParams(search.slice(1)));
+      if (opensFull(e)) window.open(searchFor(parsed.book, parsed.ref), '_blank');
+      else setPeek(parsed.book, parsed.ref);
     },
-    [setSearchParams]
+    [setPeek]
   );
 
   return (
@@ -584,6 +621,7 @@ const linkTypeLabel = (t: string) =>
 
 function VerseLinks({ links, refTag }: { links: LinkRef[]; refTag: string }) {
   const [open, setOpen] = useState(false);
+  const { setPeek } = usePeek();
   const groups = useMemo(() => {
     const m = new Map<string, LinkRef[]>();
     for (const l of links) {
@@ -626,8 +664,16 @@ function VerseLinks({ links, refTag }: { links: LinkRef[]; refTag: string }) {
               <ul className="link-list">
                 {arr.map((l, i) => (
                   <li key={`${l.otherId}|${l.otherRef}|${i}`}>
-                    <Link to={{ search: searchFor(l.otherId, l.otherRef) }} className="comm-link">
-                      {l.otherId} <span className="comm-ref">{l.otherRef}</span> ↗
+                    <Link
+                      to={{ search: searchFor(l.otherId, l.otherRef) }}
+                      className="comm-link"
+                      onClick={(e) => {
+                        if (opensFull(e)) return; // cmd/ctrl-click → browser opens full page in a new tab
+                        e.preventDefault();
+                        setPeek(l.otherId, l.otherRef);
+                      }}
+                    >
+                      {l.otherId} <span className="comm-ref">{l.otherRef}</span>
                     </Link>
                   </li>
                 ))}
@@ -637,5 +683,100 @@ function VerseLinks({ links, refTag }: { links: LinkRef[]; refTag: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Inline preview of a linked target — Sefaria's connections-panel gesture. Fetches just the previewed
+// segment on demand (same version-aware path as the reader); embedded refLinks inside it chain to
+// further previews. Driven by ?peek/&pr, so it's shareable and the Back button dismisses it.
+function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
+  const { setPeek, clearPeek } = usePeek();
+  const [state, setState] = useState<{
+    loading: boolean;
+    error?: string;
+    editions: Edition[];
+    byEd: Record<string, string>;
+  }>({ loading: true, editions: [], byEd: {} });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, editions: [], byEd: {} });
+    (async () => {
+      try {
+        await ensureBook(book);
+        const [rows, eds] = await Promise.all([
+          refTag ? getSegment(book, refTag) : getContent(book),
+          getEditions(book),
+        ]);
+        if (cancelled) return;
+        const byEd: Record<string, string> = {};
+        for (const r of rows) if (byEd[r.edition_id] === undefined) byEd[r.edition_id] = r.text;
+        setState({ loading: false, editions: eds, byEd });
+      } catch (e) {
+        if (!cancelled) setState({ loading: false, error: String(e), editions: [], byEd: {} });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [book, refTag]);
+
+  // Embedded refLinks inside the preview chain to further previews (cmd/ctrl-click → full page).
+  const onRefClick = useCallback(
+    (e: MouseEvent<HTMLDivElement>) => {
+      const a = (e.target as HTMLElement).closest('a.refLink');
+      if (!a) return;
+      e.preventDefault();
+      const parsed = parseSefariaRef(a.getAttribute('data-ref') || '');
+      if (!parsed) return;
+      if (opensFull(e)) window.open(searchFor(parsed.book, parsed.ref), '_blank');
+      else setPeek(parsed.book, parsed.ref);
+    },
+    [setPeek]
+  );
+
+  const shown = state.editions.filter((e) => state.byEd[e.id]);
+  return (
+    <aside className="peek" aria-label="Linked text preview">
+      <div className="peek-head">
+        <div className="peek-title">
+          {book}
+          {refTag && <span className="comm-ref"> {refTag}</span>}
+        </div>
+        <div className="peek-actions">
+          <Link to={{ search: searchFor(book, refTag) }} className="comm-link" title="Open full text">
+            open ↗
+          </Link>
+          <button type="button" className="peek-close" onClick={clearPeek} aria-label="Close preview">
+            ✕
+          </button>
+        </div>
+      </div>
+      <div className="peek-body" onClick={onRefClick}>
+        {state.loading && <p className="muted">Loading…</p>}
+        {state.error && <p className="error">{state.error}</p>}
+        {!state.loading && !state.error && shown.length === 0 && (
+          <p className="muted">
+            No text for this reference.{' '}
+            <Link to={{ search: searchFor(book, refTag) }} className="comm-link">
+              Open the book ↗
+            </Link>
+          </p>
+        )}
+        {shown.map((e) => {
+          const rtl = RTL_LANGS.has(e.lang);
+          return (
+            <div className="peek-seg" key={e.id}>
+              <div className="peek-ed">{e.title}</div>
+              <p
+                className={`col ${rtl ? 'he' : 'en'}`}
+                dir={rtl ? 'rtl' : 'ltr'}
+                dangerouslySetInnerHTML={{ __html: state.byEd[e.id] }}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </aside>
   );
 }

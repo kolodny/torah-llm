@@ -4,10 +4,11 @@
 // many EDITIONS — one per (source, language, version). e.g. one "Genesis" with Sefaria Hebrew,
 // JPS-1917 English, a French translation, the WLC, and Orayta's text as selectable editions.
 
-// Bump when the boot-DB schema changes. The slicer stamps it into db.sqlite via
-// `PRAGMA user_version`; the browser client re-downloads the boot DB if its stored version
-// doesn't match, so an old cached DB in OPFS self-heals instead of erroring.
-export const BOOT_VERSION = 11;
+// Bump when the CONTENT-cache schema changes (toc/editions/content/meta/links). The slicer stamps
+// it into db.sqlite via `PRAGMA user_version`. On mismatch the worker migrates the cached content DB
+// IN PLACE via CONTENT_MIGRATIONS — it never wipes/re-downloads the corpus to change schema. Every
+// bump must add the matching migration step. See LLM/022.
+export const BOOT_VERSION = 12;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS toc (
@@ -21,7 +22,8 @@ CREATE TABLE IF NOT EXISTS toc (
   order_index   INTEGER,
   has_content   INTEGER NOT NULL DEFAULT 0,
   edition_count INTEGER NOT NULL DEFAULT 0,
-  file_size     INTEGER              -- byte size of this book's slice (set by the slicer)
+  file_size     INTEGER,             -- byte size of this book's slice (set by the slicer)
+  content_version TEXT               -- hash of this book's slice rows; drives incremental re-merge
 );
 CREATE INDEX IF NOT EXISTS toc_parent_idx ON toc(parent_id);
 
@@ -63,3 +65,27 @@ CREATE TABLE IF NOT EXISTS links (
 CREATE INDEX IF NOT EXISTS links_from_idx ON links(from_id, from_ref);
 CREATE INDEX IF NOT EXISTS links_to_idx   ON links(to_id, to_ref);
 `;
+
+// Local-only bookkeeping, created by the worker on the content DB (NOT shipped in slices/boot DB):
+//   book_state  — the content_version actually merged locally for each book (drives staleness).
+//   cache_meta  — small key/value; stores the local publishId (which catalog snapshot we hold).
+export const LOCAL_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS book_state (
+  toc_id          TEXT PRIMARY KEY,
+  content_version TEXT
+);
+CREATE TABLE IF NOT EXISTS cache_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+`;
+
+// How a cached content DB is upgraded in place: CONTENT_MIGRATIONS[v] takes user_version v→v+1.
+// The corpus is NEVER re-downloaded for a schema change — every BOOT_VERSION bump MUST add the next
+// step here (additive ALTER / CREATE, or a table-rebuild for non-additive changes; SQLite can do any
+// of these in place). The boot DB + downloaded books are kept; only books whose content_version
+// actually changed re-download (see book_state). A missing step is a programmer error → boot throws
+// rather than silently wiping a multi-GB cache.
+export const CONTENT_MIGRATIONS: Record<number, string> = {
+  11: `ALTER TABLE toc ADD COLUMN content_version TEXT`,
+};

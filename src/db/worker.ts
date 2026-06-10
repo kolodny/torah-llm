@@ -5,13 +5,18 @@
 // shared by every tab via per-tab MessagePorts brokered through the SharedWorker. So one
 // connection backs all tabs: no exclusive-handle conflicts, and downloaded books are shared.
 //
-// It self-boots: downloads the TOC DB if absent, opens it, and re-downloads on a version bump.
+// Updates are forward-compatible WITHOUT ever re-downloading the corpus (see LLM/022):
+//   /db.sqlite    — the content cache: catalog (toc) + accumulated editions/content/meta/links.
+//                   A schema bump migrates this file IN PLACE (CONTENT_MIGRATIONS); it is never
+//                   wiped to change schema.
+//   manifest.json — { schemaVersion, publishId }, fetched each start so a new publish refreshes the
+//                   catalog and lazily re-merges only the books whose content_version changed.
 
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import { expose } from 'comlink';
 import type { Progress } from './types';
-import { BOOT_VERSION } from '../../shared/schema';
-import { TOC_DB } from '../../shared/slice-path';
+import { BOOT_VERSION, LOCAL_TABLES_SQL, CONTENT_MIGRATIONS } from '../../shared/schema';
+import { TOC_DB, sliceUrlPath } from '../../shared/slice-path';
 
 (self as unknown as { sqlite3ApiConfig?: unknown }).sqlite3ApiConfig = {
   warn: (...args: unknown[]) => {
@@ -20,12 +25,17 @@ import { TOC_DB } from '../../shared/slice-path';
 };
 
 const BOOT_PATH = '/db.sqlite';
-const bootUrl = `${import.meta.env.BASE_URL}db/${TOC_DB}`;
+const CATALOG_TMP = '/catalog-tmp.sqlite';
+const dbBase = `${import.meta.env.BASE_URL}db/`;
+const bootUrl = `${dbBase}${TOC_DB}`;
+const manifestUrl = `${dbBase}manifest.json`;
+
+type Manifest = { schemaVersion: number; publishId: string; books?: number };
 
 const init = (async () => {
-  const sqlite3 = await sqlite3InitModule({ print: console.log, printErr: console.error });
+  const sqlite3 = await sqlite3InitModule(); // print/printErr default to console.log/error
   const pool = await sqlite3.installOpfsSAHPoolVfs({ name: 'torah-llm' });
-  // Default pool holds ~1-2 DBs; merge needs the boot DB + a slice + temp slots simultaneously.
+  // Need room for: /db.sqlite + a slice (merge) + /catalog-tmp + SQLite journals.
   await pool.reserveMinimumCapacity(8);
   return { sqlite3, pool };
 })();
@@ -33,8 +43,27 @@ const init = (async () => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let db: any;
 
+// --- small query helpers (the connection is a single shared `db`) -----------------------------
+function rows(sql: string, bind: unknown[] = []): unknown[][] {
+  const out: unknown[][] = [];
+  db.exec({ sql, bind: bind.length ? bind : undefined, rowMode: 'array', resultRows: out });
+  return out;
+}
+function scalar(sql: string, bind: unknown[] = []): unknown {
+  const r = rows(sql, bind);
+  return r.length ? r[0][0] : undefined;
+}
+function pragmaInt(name: string): number {
+  const r = rows(`PRAGMA ${name}`);
+  return r.length ? Number(r[0][0]) : 0;
+}
+function setPublishId(id: string) {
+  db.exec({ sql: `INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('publishId', ?)`, bind: [id] });
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function streamInto(pool: any, path: string, url: string, onProgress?: (p: Progress) => void) {
+  if (pool.getFileNames().includes(path)) pool.unlink(path); // replace any partial leftover
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   const total = Number(res.headers.get('content-length') ?? 0);
@@ -49,7 +78,7 @@ async function streamInto(pool: any, path: string, url: string, onProgress?: (p:
   });
 }
 
-// Ensure the boot DB is present, current, and open. Retryable: a failed boot (offline / transient
+// Ensure storage is present, current, and open. Retryable: a failed boot (offline / transient
 // fetch error) re-arms so the next call tries again instead of poisoning the worker permanently.
 let bootP: Promise<void> | null = null;
 function boot(): Promise<void> {
@@ -60,27 +89,135 @@ function boot(): Promise<void> {
     });
   return bootP;
 }
+
 async function doBoot() {
   const { pool } = await init;
-  const openBoot = () => {
-    db = new pool.OpfsSAHPoolDb(BOOT_PATH);
-  };
+
+  // 1. Content cache: open it and bring the schema current by migrating IN PLACE (never re-download).
+  //    `fresh` = the boot DB was just downloaded, so it already matches the published manifest.
+  let fresh = false;
   if (!pool.getFileNames().includes(BOOT_PATH)) {
     await streamInto(pool, BOOT_PATH, bootUrl);
-    openBoot();
+    db = new pool.OpfsSAHPoolDb(BOOT_PATH);
+    fresh = true;
+  } else {
+    db = new pool.OpfsSAHPoolDb(BOOT_PATH);
+    migrateContent();
+  }
+  db.exec(LOCAL_TABLES_SQL); // local-only bookkeeping (not shipped in slices)
+
+  // 2. Reconcile against the published manifest (catalog refresh + prune; stale books re-merge lazily).
+  await reconcile(pool, fresh);
+}
+
+// Upgrade an already-cached content DB in place, one step at a time. Each step is additive/cache-safe
+// SQL (or a table rebuild) — the corpus is never re-downloaded to change schema. A missing step means
+// the migration ladder is incomplete (a bug): fail loudly rather than wipe a multi-GB cache.
+function migrateContent() {
+  let v = pragmaInt('user_version');
+  while (v < BOOT_VERSION) {
+    const step = CONTENT_MIGRATIONS[v];
+    if (step === undefined)
+      throw new Error(
+        `No content migration from v${v} to v${v + 1}. The cache cannot be upgraded in place; ` +
+          `add CONTENT_MIGRATIONS[${v}] (or use "Wipe local DB" to recover).`
+      );
+    db.exec('BEGIN');
+    try {
+      db.exec(step);
+      db.exec(`PRAGMA user_version = ${v + 1}`); // transactional with the step
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    v += 1;
+  }
+}
+
+// Refresh the catalog from the published manifest WITHOUT wiping content. Books removed upstream are
+// pruned; books whose content_version changed are left for ensureBook to re-merge on next access.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function reconcile(pool: any, fresh: boolean) {
+  let manifest: Manifest | undefined;
+  try {
+    const res = await fetch(manifestUrl, { cache: 'no-store' });
+    if (res.ok) manifest = (await res.json()) as Manifest;
+  } catch {
+    return; // offline → keep using the cached catalog
+  }
+  if (!manifest?.publishId) return;
+  // Fresh boot DB already IS this manifest's snapshot — just record which publish we hold.
+  if (fresh) {
+    setPublishId(manifest.publishId);
     return;
   }
-  openBoot();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rows: any[] = [];
-  db.exec({ sql: 'PRAGMA user_version', rowMode: 'object', resultRows: rows });
-  if ((rows[0]?.user_version ?? 0) !== BOOT_VERSION) {
-    db.close();
-    db = undefined;
-    await pool.wipeFiles();
-    await streamInto(pool, BOOT_PATH, bootUrl);
-    openBoot();
+  if (scalar(`SELECT value FROM cache_meta WHERE key = 'publishId'`) === manifest.publishId) return;
+
+  await streamInto(pool, CATALOG_TMP, bootUrl); // toc-only boot DB (small)
+  db.exec(`ATTACH DATABASE '${CATALOG_TMP}' AS cat`);
+  try {
+    db.exec('BEGIN');
+    // Refresh the catalog spine (new content_versions, titles, sizes) and prune removed books.
+    db.exec(`DELETE FROM toc WHERE id NOT IN (SELECT id FROM cat.toc)`);
+    db.exec(`INSERT OR REPLACE INTO toc SELECT * FROM cat.toc`);
+    db.exec(`DELETE FROM content    WHERE toc_id  NOT IN (SELECT id FROM toc)`);
+    db.exec(`DELETE FROM editions   WHERE toc_id  NOT IN (SELECT id FROM toc)`);
+    db.exec(`DELETE FROM meta       WHERE toc_id  NOT IN (SELECT id FROM toc)`);
+    db.exec(`DELETE FROM links      WHERE from_id NOT IN (SELECT id FROM toc)
+                                       OR to_id   NOT IN (SELECT id FROM toc)`);
+    db.exec(`DELETE FROM book_state WHERE toc_id  NOT IN (SELECT id FROM toc)`);
+    // First versioned boot: book_state is empty but content may already be cached from before this
+    // feature existed. Trust the existing cache as current so we don't re-download everything once.
+    if (Number(scalar(`SELECT COUNT(*) FROM book_state`)) === 0) {
+      db.exec(`INSERT OR REPLACE INTO book_state (toc_id, content_version)
+                 SELECT DISTINCT c.toc_id, t.content_version
+                   FROM content c JOIN toc t ON t.id = c.toc_id`);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  } finally {
+    db.exec(`DETACH DATABASE cat`);
+    pool.unlink(CATALOG_TMP);
   }
+  setPublishId(manifest.publishId);
+}
+
+// Replace a book's published rows with a slice's contents, atomically (idempotent). content/links
+// drop their surrogate ids (autoincrement locally) so re-merging a republished slice can't collide
+// with another book's global ids; editions keep their stable TEXT id.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function mergeSlice(pool: any, tocId: string, url: string, path: string, onProgress?: (p: Progress) => void) {
+  if (!pool.getFileNames().includes(path)) await streamInto(pool, path, url, onProgress);
+  db.exec(`ATTACH DATABASE '${path.replace(/'/g, "''")}' AS merge`); // escape ' (ids like "Ba'al HaTurim")
+  try {
+    db.exec('BEGIN');
+    db.exec({ sql: `DELETE FROM editions WHERE toc_id = ?`, bind: [tocId] });
+    db.exec({ sql: `DELETE FROM content  WHERE toc_id = ?`, bind: [tocId] });
+    db.exec({ sql: `DELETE FROM meta     WHERE toc_id = ?`, bind: [tocId] });
+    db.exec({ sql: `DELETE FROM links    WHERE from_id = ? OR to_id = ?`, bind: [tocId, tocId] });
+    db.exec(`INSERT INTO editions (id,toc_id,source,lang,title,info,order_index)
+             SELECT id,toc_id,source,lang,title,info,order_index FROM merge.editions`);
+    db.exec(`INSERT INTO content (edition_id,toc_id,ref,text)
+             SELECT edition_id,toc_id,ref,text FROM merge.content`);
+    db.exec(`INSERT INTO meta (toc_id,schema) SELECT toc_id,schema FROM merge.meta`);
+    db.exec(`INSERT OR IGNORE INTO links (from_id,from_ref,to_id,to_ref,connection_type)
+             SELECT from_id,from_ref,to_id,to_ref,connection_type FROM merge.links`);
+    db.exec({
+      sql: `INSERT OR REPLACE INTO book_state (toc_id, content_version)
+              SELECT id, content_version FROM toc WHERE id = ?`,
+      bind: [tocId],
+    });
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  } finally {
+    db.exec(`DETACH DATABASE merge`);
+  }
+  pool.unlink(path);
 }
 
 const api = {
@@ -98,29 +235,27 @@ const api = {
     return resultRows;
   },
 
-  /** Download a book slice (if not already present) and merge its rows into the open DB. */
-  async merge(url: string, path: string, onProgress?: (p: Progress) => void) {
+  /** Ensure a book's content is local AND current: (re)merge its slice when missing or stale. */
+  async ensureBook(tocId: string, onProgress?: (p: Progress) => void) {
     const { pool } = await init;
     await boot();
-    if (!pool.getFileNames().includes(path)) await streamInto(pool, path, url, onProgress);
-    db.exec(`ATTACH DATABASE '${path.replace(/'/g, "''")}' AS merge`); // escape ' (book ids like "Ba'al HaTurim")
-    try {
-      db.exec(`INSERT OR IGNORE INTO editions (id,toc_id,source,lang,title,info,order_index) SELECT id,toc_id,source,lang,title,info,order_index FROM merge.editions`);
-      db.exec(`INSERT OR IGNORE INTO content (id,edition_id,toc_id,ref,text) SELECT id,edition_id,toc_id,ref,text FROM merge.content`);
-      db.exec(`INSERT OR IGNORE INTO meta (toc_id,schema) SELECT toc_id,schema FROM merge.meta`);
-      db.exec(`INSERT OR IGNORE INTO links (id,from_id,from_ref,to_id,to_ref,connection_type) SELECT id,from_id,from_ref,to_id,to_ref,connection_type FROM merge.links`);
-    } finally {
-      db.exec(`DETACH DATABASE merge`);
-    }
-    pool.unlink(path);
+    const want = scalar(`SELECT content_version FROM toc WHERE id = ?`, [tocId]);
+    const have = scalar(`SELECT content_version FROM book_state WHERE toc_id = ?`, [tocId]);
+    if (have != null && (want == null || have === want)) return; // present and current
+    if (want == null && Number(scalar(`SELECT COUNT(*) FROM content WHERE toc_id = ?`, [tocId])) > 0)
+      return; // no version info (offline/old catalog) but content is present → use it
+    const file = sliceUrlPath(tocId);
+    await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
   },
 
+  /** Clear all local data — a manual recovery action (the button), never an automatic version wipe. */
   async wipe() {
     const { pool } = await init;
     if (db) {
       db.close();
       db = undefined;
     }
+    bootP = null;
     await pool.wipeFiles();
   },
 };

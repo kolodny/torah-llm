@@ -238,6 +238,51 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 .link-list .comm-ref { color: var(--muted); }
 @media (max-width: 860px) { .link-list { columns: 1; } }
 
+/* inline link preview (peek) — a third column, Sefaria-style connections panel */
+.layout.has-peek { grid-template-columns: 320px minmax(0, 1fr) 340px; }
+.peek {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  align-self: start;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+.peek-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+.peek-title { font-size: 14px; font-weight: 700; line-height: 1.3; }
+.peek-title .comm-ref { font-weight: 400; color: var(--muted); }
+.peek-actions { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.peek-close {
+  border: 0; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 0;
+}
+.peek-close:hover { color: var(--accent); }
+.peek-body { padding: 10px 14px 16px; }
+.peek-seg { margin: 0 0 14px; }
+.peek-seg:last-child { margin-bottom: 0; }
+.peek-ed {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--accent); font-weight: 700; margin-bottom: 3px;
+}
+.peek-seg .col.he { font-size: 18px; line-height: 1.85; }
+.peek-seg .col.en { font-size: 14px; line-height: 1.6; }
+@media (max-width: 1100px) {
+  .layout.has-peek { grid-template-columns: 1fr; }
+  .peek { position: static; max-height: none; }
+}
+
 /* brief highlight when a verse is navigated to */
 .verse.flash { animation: flash 1.6s ease-out; border-radius: 6px; }
 @keyframes flash {

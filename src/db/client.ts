@@ -10,10 +10,6 @@ import { wrap, proxy } from 'comlink';
 import type { Remote } from 'comlink';
 import type { Api } from './worker';
 import type { TocRow, Edition, ContentRow, LinkRef, Progress } from './types';
-import { sliceUrlPath, TOC_DB } from '../../shared/slice-path';
-
-const base = import.meta.env.BASE_URL; // '/' in dev
-const bootUrl = `${base}db/${TOC_DB}`;
 
 let brokerPort: MessagePort | null = null;
 let apiPromise: Promise<Remote<Api>> | null = null;
@@ -126,6 +122,17 @@ export async function getContent(tocId: string): Promise<ContentRow[]> {
   );
 }
 
+/** Just one segment's rows (every edition) — for the inline link preview. */
+export async function getSegment(tocId: string, ref: string): Promise<ContentRow[]> {
+  return withApi(
+    async (api) =>
+      (await api.exec('SELECT edition_id, ref, text FROM content WHERE toc_id = ? AND ref = ? ORDER BY id', [
+        tocId,
+        ref,
+      ])) as unknown as ContentRow[]
+  );
+}
+
 export async function getLinks(tocId: string): Promise<Record<string, LinkRef[]>> {
   return withApi(async (api) => {
     const rows = (await api.exec(
@@ -168,35 +175,42 @@ export async function getMeta(tocId: string): Promise<{ sectionNames: string[]; 
   });
 }
 
-export async function downloadBook(tocId: string, onProgress?: (p: Progress) => void) {
-  const name = sliceUrlPath(tocId);
-  await withApi((api) =>
-    api.merge(`${base}db/${name}`, `/${name}`, onProgress ? proxy(onProgress) : undefined)
-  );
-}
-
-/** Ensure a book's content is local, downloading its slice once if needed (dedupes concurrent calls). */
+/**
+ * Ensure a book's content is local AND current. The worker compares the merged content_version to
+ * the catalog's and (re)merges the slice only when missing or stale (dedupes concurrent calls).
+ */
 const ensuring = new Map<string, Promise<void>>();
 export function ensureBook(tocId: string, onProgress?: (p: Progress) => void): Promise<void> {
   let p = ensuring.get(tocId);
   if (!p) {
-    const name = sliceUrlPath(tocId);
-    p = withApi(async (api) => {
-      const has =
-        ((await api.exec('SELECT 1 FROM content WHERE toc_id = ? LIMIT 1', [tocId])) as unknown as unknown[])
-          .length > 0;
-      if (!has) {
-        await api.merge(`${base}db/${name}`, `/${name}`, onProgress ? proxy(onProgress) : undefined);
+    p = withApi((api) => api.ensureBook(tocId, onProgress ? proxy(onProgress) : undefined)).catch(
+      (e) => {
+        ensuring.delete(tocId); // don't cache a failure — allow retry on the next navigation
+        throw e;
       }
-    }).catch((e) => {
-      ensuring.delete(tocId); // don't cache a failure — allow retry on the next navigation
-      throw e;
-    });
+    );
     ensuring.set(tocId, p);
   }
   return p;
 }
 
+/** Clear all local data — manual recovery (the "Wipe local DB" button). */
 export async function wipe() {
+  ensuring.clear();
   await withApi((api) => api.wipe());
+}
+
+// Dev-only debug handle so QA (and the console) can drive the DB layer directly.
+if (import.meta.env.DEV) {
+  (globalThis as Record<string, unknown>).__torahDb = {
+    sql: (sql: string, params: unknown[] = []) => withApi((api) => api.exec(sql, params)),
+    getToc,
+    getEditions,
+    getContent,
+    getSegment,
+    getLinks,
+    getMeta,
+    ensureBook,
+    wipe,
+  };
 }
