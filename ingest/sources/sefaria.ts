@@ -15,6 +15,7 @@ import {
   type Dirent,
 } from 'node:fs';
 import type { SourceAdapter, IngestCtx } from './types.ts';
+import { pins } from './pins.ts';
 
 const SRC = 'sefaria';
 const root = resolve(import.meta.dirname, '../../');
@@ -23,7 +24,7 @@ const TOC_PATH = resolve(DIR, 'table_of_contents.json');
 const SCHEMAS_DIR = resolve(DIR, 'schemas');
 const JSON_DIR = resolve(DIR, 'json');
 
-const BUCKET = 'https://storage.googleapis.com/sefaria-export';
+const BUCKET = pins.sefaria?.bucket ?? 'https://storage.googleapis.com/sefaria-export';
 const TORAH = 'Tanakh/Torah';
 const RASHI = 'Tanakh/Rishonim on Tanakh/Rashi/Torah';
 const BOOKS = ['Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy'];
@@ -154,6 +155,22 @@ function sortLink(id1: string, ref1: string, id2: string, ref2: string): [string
   return [id2, ref2, id1, ref1];
 }
 
+// Provenance for an edition's hover tooltip, from the Sefaria version metadata.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function editionInfo(json: any): string | null {
+  const parts: string[] = [];
+  const vt = json?.versionTitle;
+  if (vt && vt !== 'merged') parts.push(String(vt));
+  else if (Array.isArray(json?.versions) && json.versions.length) {
+    const n = json.versions.length;
+    parts.push(`Merged from ${n} version${n === 1 ? '' : 's'}`);
+  }
+  if (json?.versionSource) parts.push(String(json.versionSource));
+  const lic = json?.license;
+  if (lic && !/^unknown$/i.test(String(lic))) parts.push(String(lic));
+  return parts.length ? parts.join(' · ') : null;
+}
+
 function ingest(ctx: IngestCtx) {
   // Canonical TOC spine (ids are titles / category paths, no source prefix).
   const commentaryBase = new Map<string, string>(); // commentary title -> base title
@@ -199,7 +216,7 @@ function ingest(ctx: IngestCtx) {
       const schema = schemaTop?.schema ?? { sectionNames: json.sectionNames };
       sectionNames ??= json.sectionNames;
       const editionId = `${SRC}:${spec.title}:${e.lang}:${e.title}`;
-      ctx.edition({ id: editionId, tocId: spec.title, source: SRC, lang: e.lang, title: e.title, orderIndex: i });
+      ctx.edition({ id: editionId, tocId: spec.title, source: SRC, lang: e.lang, title: e.title, info: editionInfo(json), orderIndex: i });
       editionCount++;
       for (const { path: p, value } of flatten(json.text)) {
         if (!value.trim()) continue;

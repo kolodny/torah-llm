@@ -1,45 +1,29 @@
 # torah-llm
 
-A platform for Torah content that runs **entirely in the browser**. The full Sefaria text
-catalog is split into small per-book SQLite files; the app boots from a tiny table-of-contents
-DB and downloads each book's chunk **on demand** into persistent browser storage (SQLite-WASM
-over the OPFS SAH-pool VFS) — instead of shipping one giant database.
+A multi-source Torah library that runs **entirely in the browser**. A tiny table-of-contents
+DB boots instantly; each book's text is split into a small SQLite slice and fetched **on demand**
+into persistent browser storage (SQLite-WASM over the OPFS SAH-pool VFS), shared across tabs —
+instead of shipping one giant database.
 
-## How it works
-
-```
-GCS (gs://sefaria-export)  ──fetch──▶  ./sefaria  ──build──▶  db/master.sqlite
-                                                       │
-                                                       └──slice──▶  public/db/
-                                                                      ├─ db.sqlite          (boot: TOC only)
-                                                                      └─ toc_<title>.sqlite (one per book)
-
-browser: load db.sqlite ─▶ browse catalog ─▶ click a book ─▶ fetch its slice ─▶
-         ATTACH + INSERT OR IGNORE into the local DB ─▶ read it back with SQL
-```
-
-- **Stable string keys.** A book's TOC id is its English title (`Genesis`); categories use a
-  path (`Tanakh / Torah`). Adding a new book never renumbers existing ids, so slice filenames
-  and any saved references stay valid across catalog updates.
+Each book is one **canonical** entry (keyed by title) with many **editions** — source × language ×
+version — shown side by side and reorderable. Sources are pinned in
+[`sources.lock.json`](./sources.lock.json) and ingested by adapters in `ingest/sources/`
+(Sefaria, OpenScriptures WLC, Orayta).
 
 ## Develop
 
 ```bash
 npm install
-npm run data     # fetch Torah subset from GCS → build master → slice  (≈ a few seconds)
-npm run dev      # http://localhost:5173
+npm run data    # fetch pinned source subset → build master → slice into public/db/
+npm run dev     # http://localhost:5173
 ```
 
-`npm run data` is `fetch:subset` → `build:master` → `slice`. To refresh the source files,
-`npm run fetch:subset -- --force`.
+`npm run data` = `fetch:subset → build:master → slice`. Fetched corpora and built DBs live in
+`./data` + `./public/db` (gitignored — clones stay small; `sources.lock.json` records which source
+versions to build from). Sources are cached in `./data`; delete a folder there to re-fetch it.
 
-## Scope
+## Project state
 
-Ships the **Torah** (Genesis–Deuteronomy) with **Rashi** commentary, Hebrew + English. Each verse
-shows a commentary toggle; expanding it downloads that commentary's slice on demand and renders
-the linked comments. Links are derived structurally from commentary↔base-text refs (a comment
-`a:b:c` maps to base verse `a:b`) — no link CSVs — and only links whose endpoints are both in the
-stripped master DB are kept. Expanding the corpus = fetching more titles in
-`scripts/fetch-subset.ts`; Sefaria cross-reference links are a future addition.
-
-See [`LLM/`](./LLM) for the indexed work log (decisions, data-source notes, milestones).
+**[`LLM/0.index.md`](./LLM/0.index.md) is the living dashboard** — current state, what works, what's
+next — backed by the indexed work log in [`LLM/`](./LLM) (decisions, data sources, milestones).
+Anyone (or any LLM) picking this up should start there; this README is only the quickstart.

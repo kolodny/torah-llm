@@ -343,6 +343,7 @@ function EditionBar({
               className="edition-chip add"
               onClick={() => onSetEd([...shown, e.id])}
               data-testid={`edition-${e.id}`}
+              title={editionTooltip(e)}
               lang={e.lang}
             >
               + {e.title}
@@ -353,6 +354,12 @@ function EditionBar({
       )}
     </div>
   );
+}
+
+// Hover text for an edition chip: its provenance/info, with source·lang context.
+function editionTooltip(e: Edition): string {
+  const tail = `${e.source} · ${e.lang}`;
+  return e.info ? `${e.info} (${tail})` : `${e.title} (${tail})`;
 }
 
 function SortableChip({ edition, onRemove }: { edition: Edition; onRemove: () => void }) {
@@ -370,6 +377,7 @@ function SortableChip({ edition, onRemove }: { edition: Edition; onRemove: () =>
       style={style}
       className={`edition-chip on${isDragging ? ' dragging' : ''}`}
       data-testid={`edition-${edition.id}`}
+      title={editionTooltip(edition)}
       lang={edition.lang}
     >
       <span className="chip-grip" {...attributes} {...listeners} aria-label="Drag to reorder">

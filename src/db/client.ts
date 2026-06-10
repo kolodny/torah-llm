@@ -110,7 +110,7 @@ export async function getEditions(tocId: string): Promise<Edition[]> {
   return withApi(
     async (api) =>
       (await api.exec(
-        'SELECT id, toc_id, source, lang, title, order_index FROM editions WHERE toc_id = ? ORDER BY order_index, lang',
+        'SELECT id, toc_id, source, lang, title, info, order_index FROM editions WHERE toc_id = ? ORDER BY order_index, lang',
         [tocId]
       )) as unknown as Edition[]
   );

@@ -21,6 +21,7 @@ export type Edition = {
   source: string;
   lang: string; // 'he' | 'en' | 'fr' | …
   title: string;
+  info: string | null; // provenance, shown on chip hover
   order_index: number | null;
 };
 

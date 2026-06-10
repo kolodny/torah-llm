@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "fetch:subset": "tsx scripts/fetch-subset.ts",
-    "build:master": "tsx scripts/build-master.ts",
-    "slice": "tsx scripts/slice-db.ts",
+    "fetch:subset": "tsx ingest/fetch-subset.ts",
+    "build:master": "tsx ingest/build-master.ts",
+    "slice": "tsx ingest/slice-db.ts",
     "data": "npm run fetch:subset && npm run build:master && npm run slice",
     "dev": "vite",
     "typecheck": "tsc --noEmit",

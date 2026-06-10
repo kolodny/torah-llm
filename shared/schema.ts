@@ -7,7 +7,7 @@
 // Bump when the boot-DB schema changes. The slicer stamps it into db.sqlite via
 // `PRAGMA user_version`; the browser client re-downloads the boot DB if its stored version
 // doesn't match, so an old cached DB in OPFS self-heals instead of erroring.
-export const BOOT_VERSION = 5;
+export const BOOT_VERSION = 8;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS toc (

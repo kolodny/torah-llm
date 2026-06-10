@@ -8,15 +8,16 @@
       "indexRef": "7c10a6afe11d1cd9bb7a4667d89d27173b2797d8",
       "note": "Text lives in a public, mutable GCS bucket (regenerated ~monthly). indexRef pins the Sefaria-Export books.json snapshot as a version marker; the bucket itself is not content-addressable."
     },
-    "oshb": {
-      "type": "github-raw",
-      "repo": "openscriptures/morphhb",
-      "ref": "3d15126fb1ef74867fc1434be1942e837932691f"
-    },
     "orayta": {
       "type": "github-raw",
       "repo": "MosheWagner/Orayta-Books",
       "ref": "b6ded5d58e71a6701967319de7ebdd5c5dd4302e"
+    },
+    "opensiddur": {
+      "type": "github-raw",
+      "repo": "opensiddur/sourcetexts",
+      "ref": "6a83f62bcfba640e34ab006ce9f5d4db3d6fae50",
+      "note": "Open Siddur Project source texts (whole-siddurim). We ingest only the plain-text, public-domain siddurim (Rambam Seder ha-Tefilot, Singer Standard Prayer Book)."
     }
   }
 }
