@@ -18,6 +18,24 @@
       "repo": "opensiddur/sourcetexts",
       "ref": "6a83f62bcfba640e34ab006ce9f5d4db3d6fae50",
       "note": "Open Siddur Project source texts (whole-siddurim). We ingest only the plain-text, public-domain siddurim (Rambam Seder ha-Tefilot, Singer Standard Prayer Book)."
+    },
+    "dicta-talmud": {
+      "type": "github-raw",
+      "repo": "Dicta-Israel-Center-for-Text-Analysis/Talmud-Bavli-with-Nikud",
+      "ref": "8772e90fac22060ea423c168c0f95868653f6ef1",
+      "note": "Vocalized Babylonian Talmud (CC BY-SA, Dicta/Israel). ktiv-haser .txt per tractate; subset: Berakhot, Megillah."
+    },
+    "dicta-library": {
+      "type": "https-zip",
+      "host": "https://files.dicta.org.il/library-1-0",
+      "manifestRepo": "Dicta-Israel-Center-for-Text-Analysis/Dicta-Library-Download",
+      "manifestRef": "8ea1a558c218e7fc8b17fce24af499056f2e63ca",
+      "note": "Per-book OCR text ZIPs (CC BY-SA 4.0, Dicta). URLs are mutable (no content hash); subset: achiezer, levushmordechaigittin."
+    },
+    "hewikisource": {
+      "type": "mediawiki",
+      "site": "https://he.wikisource.org",
+      "note": "Biur (modern Hebrew Tanakh commentary), CC BY-SA 4.0. Fetched via the API at current revision (mutable); subset: Biur on Genesis/Psalms/Deuteronomy."
     }
   }
 }

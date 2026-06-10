@@ -22,14 +22,22 @@ const BOOKS = [
   { path: '001_mkra/03_ctobim/a30_Song_of_Songs.txt', toc: 'Song of Songs' },
   { path: '001_mkra/03_ctobim/a34_Esther.txt', toc: 'Esther' },
 ];
-// Commentaries → existing canonical commentary book (overlays Sefaria's edition of the same book).
-const COMMENTARIES = [
-  { path: '005_mprsi_mkra/03_rsi/1_torh/01_c_RASHI_BERESHIT_L1.txt', toc: 'Rashi on Genesis' },
-  { path: '005_mprsi_mkra/03_rsi/1_torh/02_c_RASHI_SHEMOT_L1.txt', toc: 'Rashi on Exodus' },
-  { path: '005_mprsi_mkra/03_rsi/1_torh/03_c_RASHI_VAYIKRA_L1.txt', toc: 'Rashi on Leviticus' },
-  { path: '005_mprsi_mkra/03_rsi/1_torh/04_c_RASHI_BAMIDBAR_L1.txt', toc: 'Rashi on Numbers' },
-  { path: '005_mprsi_mkra/03_rsi/1_torh/05_c_RASHI_DVARIM_L1.txt', toc: 'Rashi on Deuteronomy' },
+// Commentaries → existing canonical "X on <Book>" books (one Orayta edition each, with derived
+// commentary→base links). Each Torah commentary is 5 files (01=Bereshit … 05=Dvarim).
+const TORAH = ['Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy'];
+const RASHI_HE = ['BERESHIT', 'SHEMOT', 'VAYIKRA', 'BAMIDBAR', 'DVARIM'];
+const RAMBAN_HE = ['bereshit', 'shemot', 'vayikra', 'bamidbar', 'dvarim'];
+const COMMENTARIES: { path: string; toc: string; base: string }[] = [
+  ...TORAH.map((b, i) => ({ path: `005_mprsi_mkra/03_rsi/1_torh/0${i + 1}_c_RASHI_${RASHI_HE[i]}_L1.txt`, toc: `Rashi on ${b}`, base: b })),
+  ...TORAH.map((b, i) => ({ path: `005_mprsi_mkra/04_rmbn/0${i + 1}_d_ramban_${RAMBAN_HE[i]}.txt`, toc: `Ramban on ${b}`, base: b })),
+  ...TORAH.map((b, i) => ({ path: `005_mprsi_mkra/05_abn_uzra/0${i + 1}_g_EbenEzra.txt`, toc: `Ibn Ezra on ${b}`, base: b })),
+  ...TORAH.map((b, i) => ({ path: `005_mprsi_mkra/06_sporno/0${i + 1}_j_sforno.txt`, toc: `Sforno on ${b}`, base: b })),
 ];
+
+// Canonical link ordering (matches the Sefaria adapter, so identical commentary links dedupe).
+function sortLink(a: string, ra: string, b: string, rb: string): [string, string, string, string] {
+  return a < b || (a === b && ra <= rb) ? [a, ra, b, rb] : [b, rb, a, ra];
+}
 
 async function fetchSubset() {
   let fetched = 0;
@@ -69,7 +77,7 @@ function cleanComment(s: string): string {
   let prev: string;
   do {
     prev = s;
-    s = s.replace(/<small>(?:(?!<\/?small>)[\s\S])*?<\/small>/g, '');
+    s = s.replace(/<small>(?:(?!<\/?small>)[\s\S])*?<\/small>/gi, '');
   } while (s !== prev);
   return s
     .replace(/\{\{[^}]*\}\}/g, '')
@@ -87,7 +95,7 @@ function parseCommentary(txt: string): { ref: string; text: string }[] {
   let buf: string[] = [];
   const flush = () => {
     if (chapter > 0 && verse > 0 && buf.length) {
-      const pieces = buf.join(' ').split(/(?=<b>)/).map(cleanComment).filter(Boolean);
+      const pieces = buf.join(' ').split(/(?=<[bB]>)/).map(cleanComment).filter(Boolean);
       pieces.forEach((text, i) => out.push({ ref: `${chapter}:${verse}:${i + 1}`, text }));
     }
     buf = [];
@@ -158,15 +166,22 @@ function ingest(ctx: IngestCtx) {
     ctx.meta({ tocId: toc, schema: { sectionNames: ['Chapter', 'Verse'], heSectionNames: ['פרק', 'פסוק'] } });
   }
 
-  // Commentaries (Rashi on the Torah) — a 3rd edition overlaying the canonical "Rashi on …" books.
+  // Commentaries — one Orayta edition per canonical "X on <Book>" book, plus commentary→base links.
   let commentaryRows = 0;
-  for (const { path, toc } of COMMENTARIES) {
+  let links = 0;
+  for (const { path, toc, base } of COMMENTARIES) {
+    const commentator = toc.split(' on ')[0];
     const editionId = `${SRC}:${toc}:he:Orayta`;
-    ctx.edition({ id: editionId, tocId: toc, source: SRC, lang: 'he', title: 'Orayta', info: `Rashi · ${INFO}`, orderIndex: 5 });
-    const rows = parseCommentary(readFileSync(resolve(DIR, path), 'utf8'));
-    for (const { ref, text } of rows) {
+    ctx.edition({ id: editionId, tocId: toc, source: SRC, lang: 'he', title: 'Orayta', info: `${commentator} · ${INFO}`, orderIndex: 5 });
+    for (const { ref, text } of parseCommentary(readFileSync(resolve(DIR, path), 'utf8'))) {
       ctx.content({ editionId, tocId: toc, ref, text });
       commentaryRows++;
+      const baseRef = ref.split(':').slice(0, -1).join(':'); // comment c:v:i → base verse c:v
+      if (baseRef) {
+        const [fId, fRef, tId, tRef] = sortLink(base, baseRef, toc, ref);
+        ctx.link({ fromId: fId, fromRef: fRef, toId: tId, toRef: tRef, connectionType: 'commentary' });
+        links++;
+      }
     }
     ctx.meta({
       tocId: toc,
@@ -175,7 +190,7 @@ function ingest(ctx: IngestCtx) {
   }
 
   console.log(
-    `  orayta: ${BOOKS.length} base (${baseVerses} verses) + ${COMMENTARIES.length} commentary (${commentaryRows} comments)`
+    `  orayta: ${BOOKS.length} base (${baseVerses} verses) + ${COMMENTARIES.length} commentary (${commentaryRows} comments, ${links} links)`
   );
 }
 

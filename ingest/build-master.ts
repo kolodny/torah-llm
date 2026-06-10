@@ -52,6 +52,14 @@ for (const adapter of adapters) {
   db.transaction(() => adapter.ingest(ctx))();
 }
 
+// Drop links whose endpoints have no content (generalizes "both endpoints in the master DB" across
+// all sources — adapters may derive links liberally; this keeps only the ones that resolve).
+db.exec(`
+  DELETE FROM links
+  WHERE NOT EXISTS (SELECT 1 FROM content c WHERE c.toc_id = links.from_id AND c.ref = links.from_ref)
+     OR NOT EXISTS (SELECT 1 FROM content c WHERE c.toc_id = links.to_id   AND c.ref = links.to_ref)
+`);
+
 // Safety net: a minimal canonical node for any edition whose book isn't in the catalog spine.
 db.exec(`
   INSERT OR IGNORE INTO toc (id, kind, title_en)
