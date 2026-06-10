@@ -37,7 +37,7 @@ const EXTRAS: Record<string, { dir: string; file: string; lang: string; title: s
 );
 const editionsFor = (title: string) => [...LANGS, ...(EXTRAS[title] ?? [])];
 
-type Book = { title: string; heTitle: string | null; gcsBase: string; base: string | null };
+type Book = { title: string; heTitle: string | null; gcsBase: string; base: string | null; parentId: string | null };
 
 // Walk the TOC: emit every node via onNode, return every book with its GCS path + commentary base.
 function walkToc(onNode?: (row: TocInsert) => void): Book[] {
@@ -72,6 +72,7 @@ function walkToc(onNode?: (row: TocInsert) => void): Book[] {
           node.dependence === 'Commentary' && Array.isArray(node.base_text_titles)
             ? node.base_text_titles[0] ?? null
             : null,
+        parentId,
       });
     }
   };
@@ -156,6 +157,39 @@ function createRefPath(schema: any, path: string[]): string {
   return '';
 }
 
+// Yield (tocId, ref, value) for a text. Simple texts → one book (`title`). Sefaria "complex texts"
+// store `text` as an OBJECT keyed by node title; we split them into node-qualified sub-books that
+// match Sefaria's addressing AND the links' titles: the default node ('') keeps the base title with
+// flat numeric refs ("1:1:41" — exactly how links cite it); named nodes become "<title>, <node>"
+// sub-books (e.g. "Abarbanel on Torah, Genesis"), each with its own numeric refs. Numbers 1-indexed.
+// (Daf-addressed complex nodes would need the full index schema for "2a/2b"; numeric covers the
+// Tanakh commentaries that make up the bulk of complex texts.)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function* segments(title: string, json: any): Generator<{ tocId: string; ref: string; value: string }> {
+  const complex = !!json.text && typeof json.text === 'object' && !Array.isArray(json.text);
+  if (!complex) {
+    const schema = { sectionNames: json.sectionNames };
+    for (const { path, value } of flatten(json.text)) {
+      if (value.trim()) {
+        const ref = createRefPath(schema, path);
+        if (ref) yield { tocId: title, ref, value };
+      }
+    }
+    return;
+  }
+  for (const { path, value } of flatten(json.text)) {
+    if (!value.trim()) continue;
+    let i = 0;
+    while (i < path.length && !/^\d+$/.test(path[i])) i++;
+    const nodes = path.slice(0, i).filter((t) => t !== ''); // node-title keys (drop the default '')
+    const ref = path
+      .slice(i)
+      .map((n) => String(+n + 1))
+      .join(':');
+    if (ref) yield { tocId: [title, ...nodes].join(', '), ref, value };
+  }
+}
+
 function* flatten(section: unknown, path: string[] = []): Generator<{ path: string[]; value: string }> {
   if (Array.isArray(section)) {
     for (let i = 0; i < section.length; i++) yield* flatten(section[i], [...path, String(i)]);
@@ -189,48 +223,53 @@ function editionInfo(json: any): string | null {
 
 function ingest(ctx: IngestCtx) {
   const books = walkToc((row) => ctx.toc(row)); // emit the full canonical spine
-  const commentaryBase = new Map<string, string>();
+  const knownTitles = new Set(books.map((b) => b.title));
+  const commentaryBase = new Map<string, string>(); // (sub)book id → its base book id
   for (const b of books) if (b.base) commentaryBase.set(b.title, b.base);
 
   const refsByBook = new Map<string, Set<string>>();
   let editionCount = 0;
-  let bookCount = 0;
   for (const b of books.slice(0, MAX_BOOKS)) {
-    const refs = new Set<string>();
-    let sectionNames: string[] | undefined;
-    let heSectionNames: string[] | undefined;
+    // Usually one canonical book (b.title); complex texts add node-qualified sub-books.
+    const sub = new Map<string, { refs: Set<string>; sectionNames?: string[]; heSectionNames?: string[] }>();
     editionsFor(b.title).forEach((e, i) => {
-      const path = localPath(b.gcsBase, e.dir, e.file);
-      if (!existsSync(path)) return;
+      const file = localPath(b.gcsBase, e.dir, e.file);
+      if (!existsSync(file)) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let json: any;
       try {
-        json = JSON.parse(readFileSync(path, 'utf8'));
+        json = JSON.parse(readFileSync(file, 'utf8'));
       } catch {
         return;
       }
-      const schema = { sectionNames: json.sectionNames };
-      const rows: { ref: string; value: string }[] = [];
-      for (const { path: p, value } of flatten(json.text)) {
-        if (!value.trim()) continue;
-        const ref = createRefPath(schema, p);
-        if (ref) rows.push({ ref, value });
-      }
-      if (!rows.length) return; // no parseable refs (exotic schema) — skip this edition
-      sectionNames ??= json.sectionNames;
-      heSectionNames ??= json.heSectionNames;
-      const editionId = `${SRC}:${b.title}:${e.lang}:${e.title}`;
-      ctx.edition({ id: editionId, tocId: b.title, source: SRC, lang: e.lang, title: e.title, info: editionInfo(json), orderIndex: i });
-      editionCount++;
-      for (const { ref, value } of rows) {
-        ctx.content({ editionId, tocId: b.title, ref, text: value });
-        refs.add(ref);
+      const byToc = new Map<string, { ref: string; value: string }[]>();
+      for (const { tocId, ref, value } of segments(b.title, json))
+        (byToc.get(tocId) ?? byToc.set(tocId, []).get(tocId)!).push({ ref, value });
+      for (const [tocId, rows] of byToc) {
+        const editionId = `${SRC}:${tocId}:${e.lang}:${e.title}`;
+        ctx.edition({ id: editionId, tocId, source: SRC, lang: e.lang, title: e.title, info: editionInfo(json), orderIndex: i });
+        editionCount++;
+        const s = sub.get(tocId) ?? sub.set(tocId, { refs: new Set() }).get(tocId)!;
+        for (const { ref, value } of rows) {
+          ctx.content({ editionId, tocId, ref, text: value });
+          s.refs.add(ref);
+        }
+        if (tocId === b.title) {
+          s.sectionNames ??= json.sectionNames;
+          s.heSectionNames ??= json.heSectionNames;
+        }
       }
     });
-    if (refs.size) {
-      refsByBook.set(b.title, refs);
-      bookCount++;
-      ctx.meta({ tocId: b.title, schema: { sectionNames: sectionNames ?? null, heSectionNames: heSectionNames ?? null } });
+    for (const [tocId, s] of sub) {
+      if (!s.refs.size) continue;
+      refsByBook.set(tocId, s.refs);
+      if (tocId !== b.title) {
+        // node-qualified sub-book (not in the TOC spine) — place it beside its parent book.
+        ctx.toc({ id: tocId, parent_id: b.parentId, kind: 'book', title_en: tocId, title_he: null, category_en: null, category_he: null, order_index: null });
+        const node = tocId.split(', ').pop()!; // base book = the last node segment, when it names a real book
+        if (knownTitles.has(node)) commentaryBase.set(tocId, node);
+      }
+      ctx.meta({ tocId, schema: { sectionNames: s.sectionNames ?? null, heSectionNames: s.heSectionNames ?? null } });
     }
   }
 
@@ -250,7 +289,7 @@ function ingest(ctx: IngestCtx) {
       links++;
     }
   }
-  console.log(`  sefaria: ${editionCount} editions across ${bookCount} books, ${links} commentary links`);
+  console.log(`  sefaria: ${editionCount} editions across ${refsByBook.size} books, ${links} commentary links`);
 }
 
 export const sefaria: SourceAdapter = { id: SRC, name: 'Sefaria', fetchSubset, ingest };

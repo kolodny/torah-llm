@@ -133,6 +133,23 @@ export async function getSegment(tocId: string, ref: string): Promise<ContentRow
   );
 }
 
+/**
+ * A ref's direct sibling segments (same parent + depth), every edition — lets the peek show a short
+ * quote-only segment (common in Zohar/Midrash/Talmud) together with the following segments as context.
+ */
+export async function getSiblings(tocId: string, ref: string): Promise<ContentRow[]> {
+  const parts = ref.split(':');
+  const parent = parts.slice(0, -1).join(':');
+  if (!parent) return getSegment(tocId, ref); // top-level ref → don't pull the whole book
+  const rows = (await withApi((api) =>
+    api.exec('SELECT edition_id, ref, text FROM content WHERE toc_id = ? AND ref LIKE ? ORDER BY id', [
+      tocId,
+      `${parent}:%`,
+    ])
+  )) as unknown as ContentRow[];
+  return rows.filter((r) => r.ref.split(':').length === parts.length); // direct children only
+}
+
 export async function getLinks(tocId: string): Promise<Record<string, LinkRef[]>> {
   return withApi(async (api) => {
     const rows = (await api.exec(

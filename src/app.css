@@ -278,10 +278,17 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 }
 .peek-seg .col.he { font-size: 18px; line-height: 1.85; }
 .peek-seg .col.en { font-size: 14px; line-height: 1.6; }
+.peek-segref { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.peek-seg.peek-linked { background: #fbeec8; border-radius: 6px; padding: 8px 10px; margin: 0 -10px 14px; }
 @media (max-width: 1100px) {
   .layout.has-peek { grid-template-columns: 1fr; }
   .peek { position: static; max-height: none; }
 }
+
+/* a misaligned edition (different segmentation) rendered on its own, below the aligned grid */
+.standalone { border-top: 2px solid var(--line); margin-top: 22px; padding-top: 4px; }
+.standalone-head { font-size: 13px; font-weight: 700; color: var(--accent); padding: 4px 0 2px; }
+.standalone-head .edition-lang { vertical-align: middle; }
 
 /* brief highlight when a verse is navigated to */
 .verse.flash { animation: flash 1.6s ease-out; border-radius: 6px; }

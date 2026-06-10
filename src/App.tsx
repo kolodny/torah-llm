@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import {
   DndContext,
@@ -22,7 +22,7 @@ import {
   getLocalBookIds,
   getEditions,
   getContent,
-  getSegment,
+  getSiblings,
   getLinks,
   getMeta,
   ensureBook,
@@ -561,11 +561,53 @@ function Verses({
     [setPeek]
   );
 
+  // Editions whose segmentation matches the canonical (most refs, Sefaria-preferred) share the verse
+  // grid; one that diverges (e.g. Dicta on a coarsely-segmented daf) renders as its own standalone
+  // panel below — in its own segmentation — rather than a misaligned column.
+  const { gridIds, standaloneIds } = useMemo(() => {
+    const counts = new Map<string, Map<string, number>>(); // edition → (section → child count)
+    const total = new Map<string, number>();
+    const sel = new Set(selected);
+    for (const r of rows) {
+      if (!sel.has(r.edition_id)) continue;
+      const m = counts.get(r.edition_id) ?? counts.set(r.edition_id, new Map()).get(r.edition_id)!;
+      const p = r.ref.split(':').slice(0, -1).join(':');
+      m.set(p, (m.get(p) ?? 0) + 1);
+      total.set(r.edition_id, (total.get(r.edition_id) ?? 0) + 1);
+    }
+    const srcOf = new Map(editions.map((e) => [e.id, e.source] as const));
+    const canon = selected
+      .filter((id) => total.has(id))
+      .sort(
+        (a, b) =>
+          (srcOf.get(b) === 'sefaria' ? 1 : 0) - (srcOf.get(a) === 'sefaria' ? 1 : 0) ||
+          (total.get(b) ?? 0) - (total.get(a) ?? 0)
+      )[0];
+    if (!canon) return { gridIds: selected, standaloneIds: [] as string[] };
+    const cc = counts.get(canon)!;
+    const gridIds: string[] = [];
+    const standaloneIds: string[] = [];
+    for (const id of selected) {
+      const m = counts.get(id);
+      if (id === canon || !m) {
+        gridIds.push(id);
+        continue;
+      }
+      let shared = 0;
+      let agree = 0;
+      for (const [p, c] of m) if (cc.has(p)) { shared++; if (cc.get(p) === c) agree++; }
+      if (shared >= 3 && agree / shared < 0.5) standaloneIds.push(id);
+      else gridIds.push(id);
+    }
+    return { gridIds, standaloneIds };
+  }, [rows, selected, editions]);
+
   return (
     <div className="verses" onClick={onRefClick}>
       <p className="muted" data-testid="verse-count">
         {chapters.byRef.size} verses · {chapters.grouped.length} chapters
         {!selected.length && ' · add an edition above'}
+        {standaloneIds.length > 0 && ` · ${standaloneIds.length} shown separately (different segmentation)`}
       </p>
       {chapters.grouped.map(([ch, refs]) => (
         <section key={ch} className="chapter">
@@ -577,8 +619,8 @@ function Verses({
               <div className="verse" key={r} data-ref={r}>
                 <span className="vref">{r}</span>
                 <div className="vbody">
-                  <div className="cols" style={{ ['--cols' as string]: selected.length || 1 }}>
-                    {selected.map((id) => {
+                  <div className="cols" style={{ ['--cols' as string]: gridIds.length || 1 }}>
+                    {gridIds.map((id) => {
                       const he = RTL_LANGS.has(langOf.get(id) ?? '');
                       return (
                         <p
@@ -597,7 +639,66 @@ function Verses({
           })}
         </section>
       ))}
+      {standaloneIds.map((id) => {
+        const e = editions.find((ed) => ed.id === id);
+        return e ? (
+          <StandaloneEdition key={id} edition={e} rows={rows.filter((r) => r.edition_id === id)} onClick={onRefClick} />
+        ) : null;
+      })}
     </div>
+  );
+}
+
+// An edition whose segmentation can't align with the verse grid (e.g. Dicta's coarse Talmud daf vs
+// Sefaria's fine segments) — rendered standalone, in its own ref order, so it reads correctly rather
+// than as a misaligned column.
+function StandaloneEdition({
+  edition,
+  rows,
+  onClick,
+}: {
+  edition: Edition;
+  rows: ContentRow[];
+  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+}) {
+  const grouped = useMemo(() => {
+    const byRef = new Map<string, string>();
+    const order: string[] = [];
+    for (const r of rows) {
+      if (!byRef.has(r.ref)) order.push(r.ref);
+      byRef.set(r.ref, r.text);
+    }
+    order.sort(cmpRef);
+    const g = new Map<string, string[]>();
+    for (const r of order) {
+      const ch = r.split(':')[0];
+      (g.get(ch) ?? g.set(ch, []).get(ch)!).push(r);
+    }
+    return { byRef, grouped: [...g.entries()] };
+  }, [rows]);
+  const rtl = RTL_LANGS.has(edition.lang);
+  return (
+    <section className="standalone" onClick={onClick}>
+      <div className="standalone-head">
+        {edition.title} <span className="edition-lang">{edition.lang}</span>
+        <span className="muted"> · shown separately (its own segmentation)</span>
+      </div>
+      {grouped.grouped.map(([ch, refs]) => (
+        <div className="chapter" key={ch}>
+          <h3>{ch}</h3>
+          {refs.map((r) => (
+            <div className="verse" key={r} data-ref={r}>
+              <span className="vref">{r}</span>
+              <p
+                className={`col ${rtl ? 'he' : 'en'}`}
+                dir={rtl ? 'rtl' : 'ltr'}
+                dangerouslySetInnerHTML={{ __html: grouped.byRef.get(r) ?? '' }}
+              />
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -686,34 +787,50 @@ function VerseLinks({ links, refTag }: { links: LinkRef[]; refTag: string }) {
   );
 }
 
-// Inline preview of a linked target — Sefaria's connections-panel gesture. Fetches just the previewed
-// segment on demand (same version-aware path as the reader); embedded refLinks inside it chain to
-// further previews. Driven by ?peek/&pr, so it's shareable and the Back button dismisses it.
+// Order refs numerically (chapter:verse, daf 2a/2b, comment depth) when assembling a section.
+const cmpRef = (a: string, b: string) => {
+  const na = refNum(a);
+  const nb = refNum(b);
+  for (let i = 0; i < Math.max(na.length, nb.length); i++) {
+    const d = (na[i] ?? 0) - (nb[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+};
+
+// Inline preview of a linked target — Sefaria's connections-panel gesture. Shows the linked segment
+// WITHIN its section (the surrounding chapter/daf), highlighted and scrolled into view, so a quote-only
+// segment (Zohar/Midrash) reads in context. Fetched on demand (same version-aware path as the reader);
+// embedded refLinks chain to further previews. Driven by ?peek/&pr — shareable and Back-dismissable.
 function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
   const { setPeek, clearPeek } = usePeek();
   const [state, setState] = useState<{
     loading: boolean;
     error?: string;
     editions: Edition[];
-    byEd: Record<string, string>;
-  }>({ loading: true, editions: [], byEd: {} });
+    segments: { ref: string; texts: Record<string, string> }[];
+  }>({ loading: true, editions: [], segments: [] });
 
   useEffect(() => {
+    if (!refTag) {
+      setState({ loading: false, editions: [], segments: [] });
+      return;
+    }
     let cancelled = false;
-    setState({ loading: true, editions: [], byEd: {} });
+    setState({ loading: true, editions: [], segments: [] });
     (async () => {
       try {
         await ensureBook(book);
-        const [rows, eds] = await Promise.all([
-          refTag ? getSegment(book, refTag) : getContent(book),
-          getEditions(book),
-        ]);
+        const [eds, rows] = await Promise.all([getEditions(book), getSiblings(book, refTag)]);
         if (cancelled) return;
-        const byEd: Record<string, string> = {};
-        for (const r of rows) if (byEd[r.edition_id] === undefined) byEd[r.edition_id] = r.text;
-        setState({ loading: false, editions: eds, byEd });
+        const byRef = new Map<string, Record<string, string>>();
+        for (const r of rows) (byRef.get(r.ref) ?? byRef.set(r.ref, {}).get(r.ref)!)[r.edition_id] = r.text;
+        const segments = [...byRef.entries()]
+          .map(([ref, texts]) => ({ ref, texts }))
+          .sort((a, b) => cmpRef(a.ref, b.ref));
+        setState({ loading: false, editions: eds, segments });
       } catch (e) {
-        if (!cancelled) setState({ loading: false, error: String(e), editions: [], byEd: {} });
+        if (!cancelled) setState({ loading: false, error: String(e), editions: [], segments: [] });
       }
     })();
     return () => {
@@ -735,7 +852,15 @@ function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
     [setPeek]
   );
 
-  const shown = state.editions.filter((e) => state.byEd[e.id]);
+  // Scroll the linked segment into view once the section renders.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (state.loading) return;
+    bodyRef.current?.querySelector<HTMLElement>('.peek-linked')?.scrollIntoView({ block: 'center' });
+  }, [state.loading, state.segments]);
+
+  const shown = state.editions.filter((e) => state.segments.some((s) => s.texts[e.id]));
+  const multi = state.segments.length > 1;
   return (
     <aside className="peek" aria-label="Linked text preview">
       <div className="peek-head">
@@ -752,7 +877,7 @@ function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
           </button>
         </div>
       </div>
-      <div className="peek-body" onClick={onRefClick}>
+      <div className="peek-body" onClick={onRefClick} ref={bodyRef}>
         {state.loading && <p className="muted">Loading…</p>}
         {state.error && <p className="error">{state.error}</p>}
         {!state.loading && !state.error && shown.length === 0 && (
@@ -763,19 +888,21 @@ function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
             </Link>
           </p>
         )}
-        {shown.map((e) => {
-          const rtl = RTL_LANGS.has(e.lang);
-          return (
-            <div className="peek-seg" key={e.id}>
-              <div className="peek-ed">{e.title}</div>
-              <p
-                className={`col ${rtl ? 'he' : 'en'}`}
-                dir={rtl ? 'rtl' : 'ltr'}
-                dangerouslySetInnerHTML={{ __html: state.byEd[e.id] }}
-              />
-            </div>
-          );
-        })}
+        {state.segments.map((seg) => (
+          <div className={`peek-seg${seg.ref === refTag ? ' peek-linked' : ''}`} key={seg.ref}>
+            {multi && <div className="peek-segref">{seg.ref}</div>}
+            {shown.map((e) =>
+              seg.texts[e.id] ? (
+                <p
+                  key={e.id}
+                  className={`col ${RTL_LANGS.has(e.lang) ? 'he' : 'en'}`}
+                  dir={RTL_LANGS.has(e.lang) ? 'rtl' : 'ltr'}
+                  dangerouslySetInnerHTML={{ __html: seg.texts[e.id] }}
+                />
+              ) : null
+            )}
+          </div>
+        ))}
       </div>
     </aside>
   );

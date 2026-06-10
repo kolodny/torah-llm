@@ -66,6 +66,11 @@ async function streamInto(pool: any, path: string, url: string, onProgress?: (p:
   if (pool.getFileNames().includes(path)) pool.unlink(path); // replace any partial leftover
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  // A missing DB file makes the dev/static server fall back to index.html (HTTP 200, text/html) —
+  // importing that yields a cryptic "not an SQLite3 header" error. Catch it as a clear, retryable
+  // one (boot() re-arms on throw, so a reload after a rebuild finishes succeeds).
+  if ((res.headers.get('content-type') ?? '').includes('text/html'))
+    throw new Error(`Database not available yet at ${url} (server returned a web page). If a data rebuild is in progress, retry in a moment.`);
   const total = Number(res.headers.get('content-length') ?? 0);
   const reader = res.body!.getReader();
   let received = 0;

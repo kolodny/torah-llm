@@ -1,7 +1,8 @@
 // Hebrew Wikisource — the "Biur" (ביאור), Wikisource's own modern-Hebrew Tanakh commentary
 // (CC BY-SA 4.0). It's verse-segmented and NOT in Sefaria, so it's the one genuinely-new slice of
-// he.wikisource (the rest is duplicative). We ingest it as a verse-aligned EDITION of the base book
-// (Genesis/Psalms/…), so it dedups into the canonical Tanakh and sits beside the other editions.
+// he.wikisource (the rest is duplicative). Biur is a COMMENTARY, so we ingest it as its own book
+// "Biur on <Book>" (verse refs) linked to the base verses — NOT as a sparse "edition" of the base
+// text (which rendered as a mostly-blank, misaligned column). It shows up as a commentary connection.
 // Fetched via the MediaWiki API (current revision — mutable; a small whitelisted subset of pages).
 
 import { resolve, dirname } from 'node:path';
@@ -105,15 +106,17 @@ function ingest(ctx: IngestCtx) {
 
   let total = 0;
   for (const [toc, titles] of byBook) {
-    const editionId = `${SRC}:${toc}:he:Biur`;
-    ctx.edition({ id: editionId, tocId: toc, source: SRC, lang: 'he', title: 'Biur (Wikisource)', info: INFO, orderIndex: 9 });
+    const book = `Biur on ${toc}`; // its own commentary book, linked to the base verses
+    const editionId = `${SRC}:${book}:he:Biur`;
+    ctx.edition({ id: editionId, tocId: book, source: SRC, lang: 'he', title: 'Biur (Wikisource)', info: INFO, orderIndex: 0 });
     for (const title of titles) {
       for (const { ref, text } of parseBiur(readFileSync(local(title), 'utf8'))) {
-        ctx.content({ editionId, tocId: toc, ref, text });
+        ctx.content({ editionId, tocId: book, ref, text });
+        ctx.link({ fromId: book, fromRef: ref, toId: toc, toRef: ref, connectionType: 'commentary' });
         total++;
       }
     }
-    ctx.meta({ tocId: toc, schema: { sectionNames: ['Chapter', 'Verse'], heSectionNames: ['פרק', 'פסוק'] } });
+    ctx.meta({ tocId: book, schema: { sectionNames: ['Chapter', 'Verse'], heSectionNames: ['פרק', 'פסוק'] } });
   }
   console.log(`  hewikisource: Biur on ${byBook.size} book(s), ${total} verses`);
 }

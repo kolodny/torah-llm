@@ -52,6 +52,11 @@ for (const adapter of adapters) {
   db.transaction(() => adapter.ingest(ctx))();
 }
 
+// Edition alignment is handled in the READER, not here: a selected edition whose segmentation
+// diverges from the canonical (e.g. Dicta segments a Talmud daf coarsely vs Sefaria's fine segments)
+// renders as a standalone panel rather than a misaligned parallel column. Nothing is dropped — every
+// edition is kept; the reader decides grid-column vs. standalone per selection (see src/App.tsx).
+
 // Drop links whose endpoints have no content (generalizes "both endpoints in the master DB" across
 // all sources — adapters may derive links liberally; this keeps only the ones that resolve).
 // A (toc_id, ref) index makes the millions of endpoint lookups in the prune fast.
