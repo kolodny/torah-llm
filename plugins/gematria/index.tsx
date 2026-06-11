@@ -197,6 +197,28 @@ ORDER BY a.val DESC
 LIMIT 50;`,
     });
     code.registerSample({
+      id: 'gematria:rashi',
+      label: 'Verse ↔ Rashi with equal gematria (any book)',
+      sql: `-- A base verse and a Rashi comment (on that same book) that happen to share a gematria. Not Genesis-bound:
+-- the join keys off the "Rashi on <book>" relationship, so it covers every book whose Rashi you've downloaded.
+WITH rashi AS MATERIALIZED (
+  SELECT replace(c.toc_id, 'Rashi on ', '') AS book, c.ref, gematria(c.text) AS val
+  FROM content c JOIN editions e ON e.id = c.edition_id
+  WHERE c.toc_id LIKE 'Rashi on %' AND e.lang = 'he'
+),
+verse AS MATERIALIZED (
+  SELECT c.toc_id AS book, c.ref, gematria(c.text) AS val
+  FROM content c JOIN editions e ON e.id = c.edition_id
+  WHERE e.source = 'sefaria' AND e.lang = 'he'
+    AND c.toc_id IN (SELECT DISTINCT book FROM rashi)
+)
+SELECT v.book, link(v.book, v.ref) AS verse, link('Rashi on ' || v.book, r.ref) AS rashi, v.val AS gematria
+FROM verse v JOIN rashi r ON r.book = v.book AND r.val = v.val
+WHERE v.val > 100
+ORDER BY v.val DESC
+LIMIT 50;`,
+    });
+    code.registerSample({
       id: 'gematria:prime',
       label: 'Verses whose gematria is prime (Genesis 1)',
       sql: `-- gematria() + evalJS() for a primality test (value = the gematria number passed in).

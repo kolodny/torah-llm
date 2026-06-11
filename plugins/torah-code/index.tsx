@@ -12,15 +12,25 @@ import { codePageApi } from '../code-search/api';
 const FIND_BODY = `
 var letters = String(text).replace(/[^א-ת]/g, '');
 var w = String(word).replace(/[^א-ת]/g, '');
-if (w.length < 2) return null;
-var max = Math.min(Math.max(1, Math.floor(Number(maxSkip) || 50)), 5000);
-var min = Math.max(1, Math.floor(Number(minSkip) || 1));
 var n = letters.length, m = w.length;
+if (m < 2 || n < m) return null;
+// Anchor the scan on the word's RAREST letter (fewest start candidates), and bail if any letter is absent —
+// so a not-found word over a whole book stays fast. Skip can't exceed (n-1)/(m-1) — beyond that no ELS fits.
+var freq = {};
+for (var i = 0; i < n; i++) freq[letters[i]] = (freq[letters[i]] || 0) + 1;
+var aj = 0, aMin = Infinity;
+for (var j = 0; j < m; j++) { var f = freq[w[j]] || 0; if (f === 0) return null; if (f < aMin) { aMin = f; aj = j; } }
+var anchor = w[aj], anchorPos = [];
+for (var i = 0; i < n; i++) if (letters[i] === anchor) anchorPos.push(i);
+var max = Math.min(Math.max(1, Math.floor(Number(maxSkip) || 50)), Math.floor((n - 1) / (m - 1)));
+var min = Math.max(1, Math.floor(Number(minSkip) || 1));
 for (var s = min; s <= max; s++) {
-  var limit = n - (m - 1) * s;
-  for (var start = 0; start < limit; start++) {
+  for (var pi = 0; pi < anchorPos.length; pi++) {
+    var start = anchorPos[pi] - aj * s;
+    if (start < 0) continue;
+    if (start + (m - 1) * s >= n) break; // positions ascending -> start only grows past here
     var ok = true;
-    for (var k = 0; k < m; k++) { if (letters[start + k * s] !== w[k]) { ok = false; break; } }
+    for (var k = 0; k < m; k++) { if (k !== aj && letters[start + k * s] !== w[k]) { ok = false; break; } }
     if (ok) return JSON.stringify({ start: start, skip: s, len: m });
   }
 }
@@ -30,50 +40,71 @@ return null;`;
 function findELS(letters: { ch: string }[], word: string, maxSkip: number, minSkip = 1): { start: number; skip: number } | null {
   const n = letters.length;
   const m = word.length;
-  if (m < 1) return null;
-  for (let s = Math.max(1, minSkip); s <= maxSkip; s++) {
-    const limit = n - (m - 1) * s;
-    for (let start = 0; start < limit; start++) {
+  if (m < 2 || n < m) return null;
+  // Anchor on the word's rarest letter (fewest candidates); bail if any letter is absent. (Same as FIND_BODY.)
+  const freq: Record<string, number> = {};
+  for (let i = 0; i < n; i++) freq[letters[i].ch] = (freq[letters[i].ch] || 0) + 1;
+  let aj = 0;
+  let aMin = Infinity;
+  for (let j = 0; j < m; j++) {
+    const f = freq[word[j]] || 0;
+    if (f === 0) return null;
+    if (f < aMin) { aMin = f; aj = j; }
+  }
+  const anchor = word[aj];
+  const anchorPos: number[] = [];
+  for (let i = 0; i < n; i++) if (letters[i].ch === anchor) anchorPos.push(i);
+  const max = Math.min(maxSkip, Math.floor((n - 1) / (m - 1)));
+  for (let s = Math.max(1, minSkip); s <= max; s++) {
+    for (let pi = 0; pi < anchorPos.length; pi++) {
+      const start = anchorPos[pi] - aj * s;
+      if (start < 0) continue;
+      if (start + (m - 1) * s >= n) break;
       let ok = true;
-      for (let k = 0; k < m; k++)
-        if (letters[start + k * s].ch !== word[k]) {
-          ok = false;
-          break;
-        }
+      for (let k = 0; k < m; k++) if (k !== aj && letters[start + k * s].ch !== word[k]) { ok = false; break; }
       if (ok) return { start, skip: s };
     }
   }
   return null;
 }
 
-// render('torah-code', book, word [, maxSkip])            — find the smallest-skip ELS of <word> and draw it
-// render('torah-code', book, start, skip [, length, width]) — draw an explicit ELS (numbers)
+// render('torah-code', books, word [, maxSkip] [, minSkip])  — find the smallest-skip ELS of <word> and draw it
+// render('torah-code', books, handle)                         — draw a {start,skip,len} handle from torah_code_find
+// render('torah-code', books, start, skip [, length, width])  — draw an explicit ELS (numbers)
+// `books` is one toc id OR a comma-separated list treated as ONE continuous letter stream (e.g.
+// 'Genesis,Exodus,…'), so an ELS can run across books; each cell links to the verse + book its letter is in.
 function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext }) {
-  const book = String(args[0] ?? '');
+  const corpus = String(args[0] ?? '');
+  const books = corpus.split(',').map((s) => s.trim()).filter(Boolean);
   const a1 = args[1];
   const a2 = args[2];
   const a3 = args[3];
   const a4 = args[4];
-  // 2nd arg: a JSON handle from torah_code_find ({start,skip,len}), a Hebrew word to find, or the start index.
   const handleStr = typeof a1 === 'string' && a1.trim().startsWith('{') ? a1 : '';
   const word = typeof a1 === 'string' && !handleStr ? a1.replace(/[^א-ת]/g, '') : '';
-  const [letters, setLetters] = useState<{ ch: string; ref: string }[] | null>(null);
+  const [letters, setLetters] = useState<{ ch: string; book: string; ref: string }[] | null>(null);
   const [err, setErr] = useState('');
 
   useEffect(() => {
     let alive = true;
     setLetters(null);
     setErr('');
-    ctx.data
-      .query(
-        'SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id WHERE c.toc_id = ? AND e.lang = ? AND e.source = ? ORDER BY c.id',
-        [book, 'he', 'sefaria']
+    Promise.all(
+      books.map((b) =>
+        ctx.data.query(
+          'SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id WHERE c.toc_id = ? AND e.lang = ? AND e.source = ? ORDER BY c.id',
+          [b, 'he', 'sefaria']
+        )
       )
-      .then((qrows) => {
+    )
+      .then((perBook) => {
         if (!alive) return;
-        const out: { ch: string; ref: string }[] = [];
-        for (const r of qrows as { ref: string; text: string }[])
-          for (const ch of stripHtml(r.text).replace(/[^א-ת]/g, '')) out.push({ ch, ref: r.ref });
+        // concatenate the books in order → one continuous letter stream, so an ELS skip can cross book lines.
+        const out: { ch: string; book: string; ref: string }[] = [];
+        books.forEach((b, bi) => {
+          for (const r of perBook[bi] as { ref: string; text: string }[])
+            for (const ch of stripHtml(r.text).replace(/[^א-ת]/g, '')) out.push({ ch, book: b, ref: r.ref });
+        });
         setLetters(out);
       })
       .catch((e) => {
@@ -82,13 +113,11 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
     return () => {
       alive = false;
     };
-  }, [book, ctx]);
+  }, [corpus, ctx]);
 
-  // Resolve start/skip/length/width: word mode finds the smallest-skip ELS (memoized — the search is O(N·skip)).
   const spec = useMemo(() => {
     if (!letters) return null;
     if (handleStr) {
-      // handle mode: a {start,skip,len} object from torah_code_find — draw it directly, no second search.
       let h: { start?: number; skip?: number; len?: number } | null = null;
       try { h = JSON.parse(handleStr); } catch { /* malformed handle */ }
       if (!h || h.start == null) return { notFound: true, reason: 'malformed handle', start: 0, skip: 1, length: 1, width: 1 };
@@ -102,17 +131,18 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
       return hit ? { start: hit.start, skip: hit.skip, length: word.length, width: hit.skip, notFound: false } : { notFound: true, reason: `not found (skip ${minSkip}-${maxSkip})`, start: 0, skip: 1, length: 1, width: 1 };
     }
     if (a1 == null) return { notFound: true, reason: 'nothing to draw (NULL)', start: 0, skip: 1, length: 1, width: 1 };
-    const start = Math.max(0, Math.floor(Number(a1) || 0)); // explicit mode: 2nd arg is the start index
+    const start = Math.max(0, Math.floor(Number(a1) || 0));
     const skip = Math.max(1, Math.floor(Number(a2) || 1));
     const length = Math.max(1, Math.floor(Number(a3) || 8));
     const width = Math.max(1, Math.floor(Number(a4) || skip));
     return { start, skip, length, width, notFound: false };
   }, [letters, handleStr, word, a1, a2, a3, a4]);
 
+  const corpusLabel = books.length > 1 ? `${books[0]}…${books[books.length - 1]}` : books[0] ?? corpus;
   if (err) return <Text c="red" size="xs">{err}</Text>;
   if (!letters || !spec) return <Loader size="xs" />;
-  if (!letters.length) return <Text c="dimmed" size="xs">No Hebrew text for “{book}”. Download it on the Storage tab.</Text>;
-  if (spec.notFound) return <Text size="sm" c="dimmed" dir="auto">Torah code: {spec.reason} in {book}{word ? ` \u2014 ${word}` : ''}.</Text>;
+  if (!letters.length) return <Text c="dimmed" size="xs">No Hebrew text for “{corpusLabel}”. Download the book(s) on the Storage tab.</Text>;
+  if (spec.notFound) return <Text size="sm" c="dimmed" dir="auto">Torah code: {spec.reason} in {corpusLabel}{word ? ` — ${word}` : ''}.</Text>;
 
   const { start, skip, length, width } = spec;
   const els = new Set<number>();
@@ -128,21 +158,20 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
   const CONTEXT = 3; // rows of surrounding text to show before/after the ELS span, for context
   const firstRow = Math.max(0, Math.floor(start / width) - CONTEXT);
   const lastRow = Math.min(Math.floor((letters.length - 1) / width), Math.floor(lastIdx / width) + CONTEXT);
-  // Keep rows readable: show at most MAX_COLS letters per row, windowed around the ELS column (which is
-  // start % width — every ELS letter sits in it), so a large skip doesn't make a hundreds-wide matrix.
+  // Keep rows readable: show at most MAX_COLS letters per row, windowed around the ELS column.
   const MAX_COLS = 41;
   const elsCol = start % width;
   const viewW = Math.min(width, MAX_COLS);
   const colStart = Math.max(0, Math.min(elsCol - Math.floor(viewW / 2), width - viewW));
-  const grid: { label: string; cells: { i: number; ch: string; ref: string; hit: boolean }[] }[] = [];
+  const grid: { label: string; cells: { i: number; ch: string; book: string; ref: string; hit: boolean }[] }[] = [];
   for (let row = firstRow; row <= lastRow; row++) {
-    const cells: { i: number; ch: string; ref: string; hit: boolean }[] = [];
+    const cells: { i: number; ch: string; book: string; ref: string; hit: boolean }[] = [];
     for (let col = colStart; col < colStart + viewW; col++) {
       const i = row * width + col;
       if (i >= letters.length) break;
-      cells.push({ i, ch: letters[i].ch, ref: letters[i].ref, hit: els.has(i) });
+      cells.push({ i, ch: letters[i].ch, book: letters[i].book, ref: letters[i].ref, hit: els.has(i) });
     }
-    if (cells.length) grid.push({ label: `${book} ${cells[0].ref}`, cells }); // label = book + verse the row starts in
+    if (cells.length) grid.push({ label: `${cells[0].book} ${cells[0].ref}`, cells }); // book + verse the row starts in
   }
 
   return (
@@ -150,7 +179,7 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
       <Text size="sm" mb={4}>
         ELS{' '}
         <b dir="rtl" style={{ fontSize: 18 }}>{code.join('')}</b>{' '}
-        <Text span c="dimmed" size="xs">· {book} · start {start} · skip {skip}</Text>
+        <Text span c="dimmed" size="xs">· {corpusLabel} · start {start} · skip {skip}</Text>
       </Text>
       <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
         <table className="torah-code-matrix">
@@ -161,13 +190,12 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
                 {cells.map((cell) => (
                   <td key={cell.i} className={cell.hit ? 'hit' : undefined}>
                     <a
-                      href={`?page=viewer&book=${encodeURIComponent(book)}&ref=${encodeURIComponent(cell.ref)}`}
-                      title={`${book} ${cell.ref}`}
+                      href={`?page=viewer&book=${encodeURIComponent(cell.book)}&ref=${encodeURIComponent(cell.ref)}`}
+                      title={`${cell.book} ${cell.ref}`}
                       onClick={(e) => {
-                        // plain click navigates in-app; cmd/ctrl/shift/middle click keeps native open-in-new-tab
                         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
                         e.preventDefault();
-                        ctx.ui.navigate(book, cell.ref);
+                        ctx.ui.navigate(cell.book, cell.ref);
                       }}
                     >
                       {cell.ch}
@@ -208,6 +236,14 @@ SELECT json_extract(f, '$.skip') AS skip,
 FROM (SELECT torah_code_find(group_concat(c.text, ''), 'תורה', 5000, 50) AS f FROM (
         SELECT c.text FROM content c JOIN editions e ON e.id = c.edition_id
         WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he' ORDER BY c.id) c);`,
+    });
+    code.registerSample({
+      id: 'torah-code:cross',
+      label: 'Torah code — תורה across the Genesis–Exodus seam',
+      sql: `-- Books are read as ONE continuous letter stream, so an ELS skip flows across book lines. Here תורה is
+-- spelled every 39 letters from the end of Genesis (50:25, 50:26) into the start of Exodus (1:1, 1:2). Each row
+-- is labelled with its own book + verse; click a letter to open it. (Needs Genesis + Exodus downloaded.)
+SELECT render('torah-code', 'Genesis,Exodus,Leviticus,Numbers,Deuteronomy', 78309, 39, 4) AS torah_genesis_to_exodus;`,
     });
   },
 });

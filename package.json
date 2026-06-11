@@ -10,7 +10,9 @@
     "data": "npm run fetch:subset && npm run build:master && npm run slice",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && rm -rf dist/assets && vite build && cp public/favicon.svg dist/",
+    "build:db": "mkdir -p dist/db && rsync -a --delete public/db/ dist/db/",
+    "build:all": "npm run build && npm run build:db",
     "preview": "vite preview"
   },
   "dependencies": {
