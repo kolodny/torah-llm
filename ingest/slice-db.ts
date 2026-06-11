@@ -12,7 +12,8 @@
 
 import Database from 'better-sqlite3';
 import { resolve } from 'node:path';
-import { rmSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { rmSync, mkdirSync, statSync, writeFileSync, readFileSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 
 import { SCHEMA_SQL, BOOT_VERSION } from '../shared/schema.ts';
@@ -72,6 +73,7 @@ const versions: Array<[string, string]> = [];
 
 for (const { id } of books) {
   const file = resolve(outDir, sliceFileName(id));
+  let size = 0;
   if (!BOOT_ONLY) {
     const slice = new Database(file);
     slice.exec(SCHEMA_SQL);
@@ -84,13 +86,17 @@ for (const { id } of books) {
       .run(id, id);
     slice.exec(`DETACH DATABASE master`);
     slice.close();
-  }
-
-  let size = 0;
-  try {
-    size = statSync(file).size;
-  } catch {
-    /* BOOT_ONLY with a missing slice — leave size 0 */
+    // Ship the slice gzipped (it's what the browser fetches); file_size records the compressed download size.
+    const gzipped = gzipSync(readFileSync(file), { level: 9 });
+    writeFileSync(`${file}.gz`, gzipped);
+    rmSync(file, { force: true });
+    size = gzipped.length;
+  } else {
+    try {
+      size = statSync(`${file}.gz`).size;
+    } catch {
+      /* BOOT_ONLY with a missing slice — leave size 0 */
+    }
   }
   const ver = contentVersion(id);
   versions.push([id, ver]);
@@ -132,9 +138,13 @@ tocDb.transaction(() => {
 })();
 tocDb.exec(`DETACH DATABASE master`);
 tocDb.exec(`PRAGMA user_version = ${BOOT_VERSION}`);
-const tocSize = statSync(tocDbPath).size;
 tocDb.close();
 master.close();
+// Ship the boot DB gzipped too (fetched on every cold start); db.sqlite.gz replaces db.sqlite.
+const tocGz = gzipSync(readFileSync(tocDbPath), { level: 9 });
+writeFileSync(`${tocDbPath}.gz`, tocGz);
+rmSync(tocDbPath, { force: true });
+const tocSize = tocGz.length;
 
 // publishId changes iff any book's content_version changed → the client knows to refresh the
 // catalog (and lazily re-merge the books that actually differ) without a wipe.

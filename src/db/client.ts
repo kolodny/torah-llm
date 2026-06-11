@@ -211,6 +211,29 @@ export function ensureBook(tocId: string, onProgress?: (p: Progress) => void): P
   return p;
 }
 
+/** Raw read query against the local DB — for plugins (toc/editions/content/meta/links). */
+export async function query(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
+  return withApi((api) => api.exec(sql, params)) as Promise<Record<string, unknown>[]>;
+}
+
+/** Table → column names, for schema-aware SQL autocomplete. */
+export async function schema(): Promise<Record<string, string[]>> {
+  return withApi((api) => api.schema());
+}
+
+/** Register plugin SQL functions (names already namespaced by the host). */
+export async function defineFunctions(
+  specs: { name: string; args: string[]; body: string; arity?: number }[]
+): Promise<void> {
+  await withApi((api) => api.defineFunctions(specs));
+}
+
+/** Remove one book's downloaded content (catalog row stays; re-downloadable). */
+export async function clearBook(tocId: string) {
+  ensuring.delete(tocId);
+  await withApi((api) => api.clearBook(tocId));
+}
+
 /** Clear all local data — manual recovery (the "Wipe local DB" button). */
 export async function wipe() {
   ensuring.clear();

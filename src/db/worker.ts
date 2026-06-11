@@ -17,6 +17,10 @@ import { expose } from 'comlink';
 import type { Progress } from './types';
 import { BOOT_VERSION, LOCAL_TABLES_SQL, CONTENT_MIGRATIONS } from '../../shared/schema';
 import { TOC_DB, sliceUrlPath } from '../../shared/slice-path';
+import { HEBREW_CHAR_STRINGS } from '../../shared/hebrew-chars';
+import { encodeLink } from '../../shared/code-link';
+import { encodeRender } from '../../shared/code-render';
+import { stripHtml as stripTags } from '../../shared/strip';
 
 (self as unknown as { sqlite3ApiConfig?: unknown }).sqlite3ApiConfig = {
   warn: (...args: unknown[]) => {
@@ -64,15 +68,20 @@ function setPublishId(id: string) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function streamInto(pool: any, path: string, url: string, onProgress?: (p: Progress) => void) {
   if (pool.getFileNames().includes(path)) pool.unlink(path); // replace any partial leftover
-  const res = await fetch(url);
+  // Prefer a gzipped artifact (smaller download, inflated in-stream); fall back to the plain file so a corpus
+  // not yet re-sliced with gzip still loads. A missing file makes the dev/static server fall back to
+  // index.html (200, text/html) — treat that as "not present" (and, for the plain file, a clear retryable error).
+  const isHtml = (r: Response) => (r.headers.get('content-type') ?? '').includes('text/html');
+  let res = await fetch(`${url}.gz`);
+  const gz = res.ok && !isHtml(res);
+  if (!gz) res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  // A missing DB file makes the dev/static server fall back to index.html (HTTP 200, text/html) —
-  // importing that yields a cryptic "not an SQLite3 header" error. Catch it as a clear, retryable
-  // one (boot() re-arms on throw, so a reload after a rebuild finishes succeeds).
-  if ((res.headers.get('content-type') ?? '').includes('text/html'))
+  if (isHtml(res))
     throw new Error(`Database not available yet at ${url} (server returned a web page). If a data rebuild is in progress, retry in a moment.`);
+  // If the host already set Content-Encoding: gzip, the browser inflated the body for us; otherwise inflate here.
+  const inflate = gz && (res.headers.get('content-encoding') ?? '').toLowerCase() !== 'gzip';
   const total = Number(res.headers.get('content-length') ?? 0);
-  const reader = res.body!.getReader();
+  const reader = (inflate ? res.body!.pipeThrough(new DecompressionStream('gzip')) : res.body!).getReader();
   let received = 0;
   await pool.importDb(path, async () => {
     const { done, value } = await reader.read();
@@ -96,7 +105,7 @@ function boot(): Promise<void> {
 }
 
 async function doBoot() {
-  const { pool } = await init;
+  const { pool, sqlite3 } = await init;
 
   // 1. Content cache: open it and bring the schema current by migrating IN PLACE (never re-download).
   //    `fresh` = the boot DB was just downloaded, so it already matches the published manifest.
@@ -110,6 +119,15 @@ async function doBoot() {
     migrateContent();
   }
   db.exec(LOCAL_TABLES_SQL); // local-only bookkeeping (not shipped in slices)
+  registerFunctions(); // evalJS() etc. — re-registered each open (functions are per-connection)
+  // Safety net: cancel a user query that runs past EXEC_TIMEOUT_MS so a pathological query (e.g. a cartesian
+  // self-join) can't wedge the single worker — which would also stall the viewer's own reads. The handler
+  // fires every ~10k VM steps; it only aborts while a user query is in flight (queryDeadline > 0).
+  try {
+    sqlite3.capi.sqlite3_progress_handler(db.pointer, 10000, () => (queryDeadline && Date.now() > queryDeadline ? 1 : 0), 0);
+  } catch (e) {
+    console.warn('[db] progress handler unavailable; user queries are not time-limited', e);
+  }
 
   // 2. Reconcile against the published manifest (catalog refresh + prune; stale books re-merge lazily).
   await reconcile(pool, fresh);
@@ -225,6 +243,91 @@ async function mergeSlice(pool: any, tocId: string, url: string, path: string, o
   pool.unlink(path);
 }
 
+// --- custom SQL functions (so the Code page can use JS expressions inside SQLite) ----------------
+type EvalFn = (...a: unknown[]) => unknown;
+const evalCache = new Map<string, EvalFn>();
+
+// Coerce a JS value into something SQLite accepts as a function result.
+const coerceSql = (r: unknown): number | string | null =>
+  r == null ? null : typeof r === 'boolean' ? (r ? 1 : 0) : typeof r === 'bigint' ? Number(r) : typeof r === 'number' || typeof r === 'string' ? r : String(r);
+
+// Plugin-registered SQL functions (the host namespaces names by plugin id, e.g. torah_code_find). Stored so
+// they survive a connection re-open (re-registered in registerFunctions). Bodies compile via new Function —
+// pure + synchronous, since they run inside query execution and can't call back to the main thread.
+type SqlFnSpec = { name: string; args: string[]; body: string; arity?: number };
+const pluginFnSpecs: SqlFnSpec[] = [];
+function registerPluginFn(spec: SqlFnSpec) {
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const fn = new Function(...spec.args, spec.body) as (...a: unknown[]) => unknown;
+  db.createFunction(spec.name, (_pCx: unknown, ...a: unknown[]) => coerceSql(fn(...a)), { arity: spec.arity ?? -1, deterministic: true });
+}
+
+// User queries (api.exec) are time-limited via the progress handler so one runaway query can't wedge the worker.
+const EXEC_TIMEOUT_MS = 10000;
+let queryDeadline = 0; // ms epoch; > 0 only while a user query runs — the progress handler aborts once past it
+
+// Register the generic SQL helpers: strip(text) (remove HTML), the Hebrew char names as 0-arity functions
+// (PAZER(), ALEPH(), …), link(...) / render(...) markers for the Code page, and evalJS(expr, ...vals) — a JS
+// expression with `value` = first value, `args` = all values, plus strip()/H in scope. (Plugins register
+// additional functions via defineFunctions.)
+function registerFunctions() {
+  // strip(text): remove HTML tags — e.g. substr(strip(c.text), 1, 40) gives a clean preview.
+  db.createFunction('strip', (_pCx: unknown, v: unknown) => stripTags(v), { arity: 1, deterministic: true });
+  db.createFunction(
+    'evalJS',
+    (_pCx: unknown, expr: string, ...vals: unknown[]) => {
+      let fn = evalCache.get(expr);
+      if (!fn) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-implied-eval
+          fn = new Function('args', 'value', 'strip', 'H', `return (${expr});`) as EvalFn;
+        } catch {
+          return null;
+        }
+        evalCache.set(expr, fn);
+      }
+      try {
+        return coerceSql(fn(vals, vals[0], stripTags, HEBREW_CHAR_STRINGS));
+      } catch {
+        return null;
+      }
+    },
+    { arity: -1, deterministic: true }
+  );
+  // Hebrew character names as 0-arity functions: PAZER() -> '֡', ALEPH() -> 'א', … so a query can write
+  // replace(text, PAZER(), '') instead of char(1441).
+  for (const [name, ch] of Object.entries(HEBREW_CHAR_STRINGS))
+    db.createFunction(name, (_pCx: unknown) => ch, { arity: 0, deterministic: true });
+  // link(book, ref [, label]): tag a cell as an explicit viewer link (the Code page renders it clickable).
+  // Usually unneeded — selecting toc_id + ref auto-links the verse — but handy for a link in a computed or
+  // aliased column. label defaults to the ref; HTML in it is stripped.
+  db.createFunction(
+    'link',
+    (_pCx: unknown, ...a: unknown[]) => {
+      const book = a[0] == null ? '' : String(a[0]);
+      const ref = a[1] == null ? null : String(a[1]);
+      const label = a.length >= 3 ? stripTags(a[2]) : ref ?? book;
+      return encodeLink({ book, ref, label });
+    },
+    { arity: -1, deterministic: true }
+  );
+  // render(rendererId, ...args): tag a cell for a plugin-supplied renderer (the cellRenderer slot on the
+  // code-search page). e.g. render('torah-code', book, start, skip) draws an ELS matrix.
+  db.createFunction(
+    'render',
+    (_pCx: unknown, ...a: unknown[]) =>
+      encodeRender({ type: a[0] == null ? '' : String(a[0]), args: a.slice(1).map((x) => (typeof x === 'bigint' ? Number(x) : x)) }),
+    { arity: -1, deterministic: true }
+  );
+  // Re-register plugin-defined functions (added after boot via defineFunctions, but must survive a re-open).
+  for (const s of pluginFnSpecs)
+    try {
+      registerPluginFn(s);
+    } catch (e) {
+      console.warn('[db] plugin fn failed:', s.name, e);
+    }
+}
+
 const api = {
   async version() {
     const { sqlite3 } = await init;
@@ -236,8 +339,32 @@ const api = {
     await boot();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const resultRows: any[] = [];
-    db.exec({ sql, bind: params.length ? params : undefined, rowMode: 'object', resultRows });
+    queryDeadline = Date.now() + EXEC_TIMEOUT_MS;
+    try {
+      db.exec({ sql, bind: params.length ? params : undefined, rowMode: 'object', resultRows });
+    } catch (e) {
+      if (/interrupt/i.test(String((e as { message?: string })?.message ?? e)))
+        throw new Error(`Query cancelled after ${EXEC_TIMEOUT_MS / 1000}s. Add a LIMIT, or MATERIALIZE a CTE you join to itself.`);
+      throw e;
+    } finally {
+      queryDeadline = 0;
+    }
     return resultRows;
+  },
+
+  /** Register plugin-supplied SQL functions (names already namespaced by the host). Bodies are pure JS. */
+  async defineFunctions(specs: SqlFnSpec[]) {
+    await boot();
+    for (const s of specs) {
+      const i = pluginFnSpecs.findIndex((x) => x.name === s.name);
+      if (i >= 0) pluginFnSpecs[i] = s;
+      else pluginFnSpecs.push(s);
+      try {
+        registerPluginFn(s);
+      } catch (e) {
+        console.warn('[db] plugin fn failed:', s.name, e);
+      }
+    }
   },
 
   /** Ensure a book's content is local AND current: (re)merge its slice when missing or stale. */
@@ -251,6 +378,32 @@ const api = {
       return; // no version info (offline/old catalog) but content is present → use it
     const file = sliceUrlPath(tocId);
     await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
+  },
+
+  /** Remove one book's downloaded content (the catalog row stays). It can be re-downloaded later. */
+  async clearBook(tocId: string) {
+    await boot();
+    db.exec('BEGIN');
+    try {
+      db.exec({ sql: `DELETE FROM editions   WHERE toc_id = ?`, bind: [tocId] });
+      db.exec({ sql: `DELETE FROM content    WHERE toc_id = ?`, bind: [tocId] });
+      db.exec({ sql: `DELETE FROM meta       WHERE toc_id = ?`, bind: [tocId] });
+      db.exec({ sql: `DELETE FROM links      WHERE from_id = ? OR to_id = ?`, bind: [tocId, tocId] });
+      db.exec({ sql: `DELETE FROM book_state WHERE toc_id = ?`, bind: [tocId] });
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+  },
+
+  /** Table → column names, for the Code page's schema-aware autocomplete. */
+  async schema(): Promise<Record<string, string[]>> {
+    await boot();
+    const tables = (rows(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`) as unknown[][]).map((r) => String(r[0]));
+    const out: Record<string, string[]> = {};
+    for (const t of tables) out[t] = (rows(`PRAGMA table_info("${t.replace(/"/g, '""')}")`) as unknown[][]).map((r) => String(r[1]));
+    return out;
   },
 
   /** Clear all local data — a manual recovery action (the button), never an automatic version wipe. */

@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["src", "shared", "ingest"]
+  "include": ["src", "shared", "ingest", "plugins"]
 }

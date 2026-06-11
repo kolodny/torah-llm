@@ -20,18 +20,58 @@ body {
   color: var(--ink);
 }
 
-.app { max-width: 1200px; margin: 0 auto; padding: 0 16px 48px; }
-
-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 18px 4px 14px;
-  border-bottom: 1px solid var(--line);
+/* the workbench shell: activity bar (left, full height) + title bar / panes / status bar (right) */
+.workbench {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "activitybar titlebar"
+    "activitybar panes"
+    "activitybar statusbar";
+  height: 100vh;
+  overflow: hidden;
 }
-header h1 { font-size: 22px; margin: 0; font-weight: 700; }
-header .sub { color: var(--muted); font-weight: 400; font-size: 15px; }
-header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
+
+/* left activity bar — one button per panel + activitybar region items */
+.activitybar {
+  grid-area: activitybar;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  background: #f3eee5;
+  border-right: 1px solid var(--line);
+}
+.activity-btn {
+  border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer;
+  width: 40px; height: 40px; border-radius: 8px; font-size: 18px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.activity-btn:hover { background: var(--hover); color: var(--accent); }
+.activity-btn.on { background: #f0e6d6; border-color: #d9b38c; color: var(--ink); }
+
+/* title bar (top) */
+.titlebar {
+  grid-area: titlebar;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.titlebar h1 { font-size: 20px; margin: 0; font-weight: 700; }
+.titlebar .sub { color: var(--muted); font-weight: 400; font-size: 14px; }
+.titlebar .meta { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
+
+/* status bar (bottom) */
+.statusbar {
+  grid-area: statusbar;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 4px 14px; border-top: 1px solid var(--line); background: #f3eee5;
+  font-size: 12px; color: var(--muted);
+}
+.statusbar-left, .statusbar-right { display: flex; align-items: center; gap: 14px; }
+.status-item { white-space: nowrap; }
+.region-item { display: inline-flex; align-items: center; }
 
 .wipe {
   border: 1px solid var(--line);
@@ -49,19 +89,17 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
   padding: 10px 12px; border-radius: 8px; margin: 12px 0; font-size: 13px; white-space: pre-wrap;
 }
 
-.layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; margin-top: 16px; }
+/* the pane row: catalog | viewer | (peek) | (panel) — each an independently scrolling column */
+.panes { display: flex; align-items: stretch; overflow: hidden; min-height: 0; }
 
 .catalog {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px;
-  align-self: start;
-  position: sticky;
-  top: 12px;
-  max-height: calc(100vh - 40px);
+  flex: 0 0 300px;
   overflow: auto;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
 }
+@media (max-width: 980px) { .catalog { flex-basis: 240px; } }
 
 .cat-label {
   display: block;
@@ -105,11 +143,11 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 .book-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 .viewer {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 20px 30px 60px;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 22px 26px;
-  min-height: 300px;
 }
 .viewer h2 { margin: 0 0 6px; font-size: 24px; }
 .viewer h2 .he { color: var(--muted); font-weight: 400; }
@@ -123,7 +161,6 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 .vref { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 6px; }
 .cols { display: grid; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); gap: 18px; }
 @media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; }
   .cols { grid-template-columns: 1fr; }
 }
 .col { margin: 0; }
@@ -238,17 +275,12 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 .link-list .comm-ref { color: var(--muted); }
 @media (max-width: 860px) { .link-list { columns: 1; } }
 
-/* inline link preview (peek) — a third column, Sefaria-style connections panel */
-.layout.has-peek { grid-template-columns: 320px minmax(0, 1fr) 340px; }
+/* inline link preview (peek) — a side pane that coexists with a plugin panel, Sefaria-style */
 .peek {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  align-self: start;
-  position: sticky;
-  top: 12px;
-  max-height: calc(100vh - 40px);
+  flex: 0 0 360px;
   overflow: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
 }
 .peek-head {
   display: flex;
@@ -281,8 +313,7 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 .peek-segref { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
 .peek-seg.peek-linked { background: #fbeec8; border-radius: 6px; padding: 8px 10px; margin: 0 -10px 14px; }
 @media (max-width: 1100px) {
-  .layout.has-peek { grid-template-columns: 1fr; }
-  .peek { position: static; max-height: none; }
+  .peek, .panel { flex-basis: 300px; }
 }
 
 /* a misaligned edition (different segmentation) rendered on its own, below the aligned grid */
@@ -291,8 +322,173 @@ header .meta { display: flex; align-items: center; gap: 14px; color: var(--muted
 .standalone-head .edition-lang { vertical-align: middle; }
 
 /* brief highlight when a verse is navigated to */
-.verse.flash { animation: flash 1.6s ease-out; border-radius: 6px; }
+.verse.flash { animation: flash 3s ease-out; border-radius: 6px; }
 @keyframes flash {
-  from { background: #fbeec8; }
-  to { background: transparent; }
+  0%, 18%  { background: var(--mantine-color-orange-3); box-shadow: 0 0 0 4px var(--mantine-color-orange-3); }
+  100%     { background: transparent; box-shadow: 0 0 0 4px transparent; }
 }
+
+/* ===== plugin platform UI ===== */
+/* a plugin panel occupies the right column (mirrors the peek box) */
+.panel {
+  flex: 0 0 360px;
+  overflow: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+}
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel);
+}
+.panel-title { font-size: 14px; font-weight: 700; }
+.panel-body { padding: 10px 12px 16px; }
+/* peek/panel are scrolling side panes; narrow-screen sizing is handled by the .peek/.panel rule above */
+
+/* commands menu + panel rail (in the header) */
+.cmd-menu { position: relative; }
+.cmd-list {
+  position: absolute; top: 100%; right: 0; z-index: 20; margin-top: 4px; min-width: 200px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); display: flex; flex-direction: column; padding: 4px;
+}
+.cmd-list button, .verse-menu-list button {
+  text-align: left; border: 0; background: transparent; cursor: pointer; font: inherit; font-size: 13px;
+  padding: 7px 10px; border-radius: 6px; color: var(--ink); white-space: nowrap;
+}
+.cmd-list button:hover, .verse-menu-list button:hover { background: var(--hover); }
+.cmd-icon { display: inline-block; width: 1.3em; text-align: center; color: var(--accent); }
+/* (the panel rail moved into the left .activitybar — see .activity-btn) */
+
+/* per-verse "⋯" actions menu (revealed on hover) */
+.verse { position: relative; }
+.verse-menu { position: absolute; top: 4px; right: 0; }
+.verse-menu-btn {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1;
+  padding: 2px 6px; border-radius: 4px; opacity: 0; transition: opacity 0.1s;
+}
+.verse:hover .verse-menu-btn, .verse-menu-btn:focus { opacity: 1; }
+.verse-menu-list {
+  position: absolute; top: 100%; right: 0; z-index: 15; min-width: 160px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  display: flex; flex-direction: column; padding: 4px;
+}
+
+/* inline link action (e.g. "♪ Songs") */
+.link-action { border: 0; background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; padding: 0 4px; opacity: 0.7; }
+.link-action:hover { opacity: 1; text-decoration: underline; }
+
+/* toast */
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50;
+  background: var(--ink); color: #fff; padding: 9px 16px; border-radius: 8px; font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); max-width: 80vw;
+}
+
+/* plugin panel contents */
+.plugin-search-input { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.plugin-search-results, .plugin-notes-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.plugin-search-results li { margin: 2px 0; }
+.plugin-search-results button {
+  text-align: left; border: 0; background: transparent; cursor: pointer; font: inherit; font-size: 13px;
+  padding: 6px 8px; border-radius: 6px; width: 100%; color: var(--ink);
+}
+.plugin-search-results button:hover { background: var(--hover); }
+.plugin-search-results mark, .plugin-notes mark { background: #fbeec8; }
+.plugin-notes-scope { font-size: 12px; color: var(--muted); display: block; margin-bottom: 8px; }
+.plugin-notes-list li { position: relative; border-bottom: 1px solid #f3efe7; padding: 6px 18px 8px 0; }
+.plugin-notes-ref { padding: 0; font-size: 12px; }
+.plugin-notes-body { font-size: 13px; color: var(--ink); margin-top: 2px; white-space: pre-wrap; }
+.plugin-notes-del { position: absolute; top: 4px; right: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; }
+.plugin-songs-for { font-size: 13px; margin-bottom: 6px; }
+.plugin-gem-mode { font-size: 12px; color: var(--muted); display: block; margin: 6px 0; }
+.plugin-gem-hit { font-size: 16px; font-family: 'Times New Roman', serif; }
+
+/* ===== editor registry: the picker tabs + the continuous (flow) reader ===== */
+.editor-picker {
+  display: inline-flex; gap: 4px; margin: 6px 0 14px; padding: 3px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+}
+.editor-tab {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px;
+  padding: 4px 12px; border-radius: 6px;
+}
+.editor-tab:hover { color: var(--accent); }
+.editor-tab.on { background: #f0e6d6; color: var(--ink); font-weight: 600; }
+
+.continuous .chapter { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 18px; }
+.col.flow { max-width: 46em; }
+.col.he.flow { max-width: 34em; }
+.flow-num { color: var(--accent); font-size: 0.62em; font-variant-numeric: tabular-nums; vertical-align: super; padding: 0 2px; }
+
+/* ===== structured decorations (marks + line widgets) ===== */
+.segment { min-width: 0; }
+.deco-line { margin-bottom: 3px; }
+.deco-mark { background: #fff2c2; border-radius: 3px; }
+mark.gematria-hit { background: #ffe08a; border-radius: 3px; padding: 0 1px; box-shadow: inset 0 0 0 1px #e8c45e; }
+.note-pin { border: 0; background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; padding: 0; opacity: 0.85; }
+.note-pin:hover { opacity: 1; text-decoration: underline; }
+
+/* ===== reader-modes plugin: Tikkun (leining) + Mikraot Gedolot editors ===== */
+.tikkun-bar, .mg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 14px; font-size: 13px; color: var(--muted); }
+.tikkun-bar label, .mg-bar label { display: inline-flex; align-items: center; gap: 4px; }
+.tikkun-verse { display: grid; grid-template-columns: 40px 1fr; gap: 14px; padding: 10px 0; border-bottom: 1px solid #f3efe7; align-items: start; }
+.tikkun-verse.two { grid-template-columns: 40px 1.25fr 1fr; }
+.tikkun-scroll {
+  margin: 0; text-align: right; color: #1c1a17; letter-spacing: 0.03em;
+  font-family: 'Taamey Frank CLM', 'Frank Ruehl CLM', 'SBL Hebrew', 'Times New Roman', serif;
+  font-size: 27px; line-height: 2.05;
+}
+.tikkun-check {
+  margin: 0; text-align: right; color: var(--muted);
+  font-family: 'SBL Hebrew', 'Times New Roman', serif; font-size: 17px; line-height: 1.95;
+}
+@media (max-width: 760px) { .tikkun-verse.two { grid-template-columns: 40px 1fr; } .tikkun-check { display: none; } }
+
+.mg-nav { display: inline-flex; align-items: center; gap: 8px; }
+.mg-nav button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 2px 10px; cursor: pointer; font: inherit; font-size: 12px; color: var(--ink); }
+.mg-nav button:disabled { opacity: 0.4; cursor: default; }
+.mg-base { border-left: 3px solid #e0cfb4; background: #fbf7f0; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px; }
+.mg-base .col.he { font-size: 23px; line-height: 1.95; margin: 0 0 6px; }
+.mg-base .col.en { font-size: 15px; line-height: 1.6; color: #2c2925; margin: 0; }
+.mg-comms { columns: 2; column-gap: 22px; }
+@media (max-width: 1000px) { .mg-comms { columns: 1; } }
+.mg-comm { break-inside: avoid; margin: 0 0 14px; border-top: 1px solid var(--line); padding-top: 6px; }
+.mg-comm-src { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); font-weight: 700; margin-bottom: 3px; }
+.mg-comm .col.he { font-size: 15px; line-height: 1.75; margin: 0; }
+.mg-src-toggle { border: 1px solid var(--line); background: var(--panel); color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px; }
+.mg-src-toggle:hover { border-color: #d9b38c; color: var(--accent); }
+.mg-sources { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 16px; background: var(--bg); }
+.mg-sources-list { max-height: 280px; overflow: auto; margin-top: 8px; }
+.mg-src-group { margin-bottom: 8px; }
+.mg-src-group-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); font-weight: 700; margin: 6px 0 2px; }
+.mg-src-item { display: block; font-size: 13px; padding: 2px 0; cursor: pointer; }
+.mg-src-item input { margin-right: 6px; }
+
+/* ===== v3 page layout (under the Mantine AppShell header, 56px) ===== */
+.viewer-page { display: flex; height: calc(100vh - 56px); overflow: hidden; }
+.viewer-page > .catalog { flex: 0 0 300px; overflow: auto; border-right: 1px solid var(--line); padding: 10px 12px; background: var(--panel); }
+.viewer-page > .viewer { flex: 1 1 0; min-width: 0; overflow: auto; padding: 18px 28px 64px; background: var(--panel); position: relative; }
+.viewer-side { flex: 0 0 360px; overflow: hidden; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; }
+.viewer-side .viewer-side-body { flex: 1 1 0; overflow: auto; }
+.viewer-side .peek, .viewer-side .panel { position: static; border: 0; border-radius: 0; max-height: none; }
+@media (max-width: 1000px) { .viewer-page > .catalog { flex-basis: 240px; } .viewer-side { flex-basis: 300px; } }
+
+.storage-page { height: calc(100vh - 56px); display: flex; flex-direction: column; padding: 16px 22px; }
+.storage-tree { flex: 1 1 0; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+
+.select-tooltip { font-size: 13px; max-width: 300px; }
+.select-tooltip-item { white-space: nowrap; }
+
+/* a generic plugin page wrapper (gematria search, code search) */
+.plugin-page { height: calc(100vh - 56px); overflow: auto; padding: 18px 28px 64px; max-width: 900px; }
+.plugin-page h2 { margin: 0 0 12px; }
+
+/* torah-code ELS matrix — a plugin cell renderer on the Code page results table */
+.torah-code-matrix { border-collapse: collapse; line-height: 1; }
+.torah-code-matrix td { border: 1px solid var(--line); min-width: 1.5em; height: 1.7em; text-align: center; padding: 0; font-size: 15px; user-select: none; }
+.torah-code-matrix td a { display: block; padding: 1px 3px; color: inherit; text-decoration: none; cursor: pointer; }
+.torah-code-matrix td:hover { outline: 2px solid var(--accent, #fd7e14); }
+.torah-code-matrix td.hit { background: var(--accent, #fd7e14); color: #fff; font-weight: 700; }
+/* the verse-ref label at the start of each row — stays put while the letters scroll */
+.torah-code-matrix td.rowlabel { position: sticky; left: 0; z-index: 1; border: none; background: var(--mantine-color-body, #fff); color: var(--mantine-color-dimmed, #868e96); font-size: 11px; padding: 0 8px 0 2px; text-align: right; white-space: nowrap; }
+.torah-code-matrix td.rowlabel:hover { outline: none; }

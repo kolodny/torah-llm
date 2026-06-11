@@ -1,0 +1,119 @@
+// SegmentText renders one text segment with plugin decorations applied. It is the single sink for
+// corpus HTML — every reader view (grid, standalone, peek) goes through it, so decorations work
+// everywhere and the HTML is sanitized (DOMPurify) in one place.
+//
+// `mark` decorations highlight a plaintext range (offsets index the tag-stripped text); decorateHtml
+// splices <mark> spans into the HTML at those offsets, preserving the existing tags. `lineWidget`
+// decorations render React nodes above the segment (e.g. a note pin). Mark clicks are delegated.
+import { useMemo, type MouseEvent as ReactMouseEvent } from 'react';
+import DOMPurify from 'dompurify';
+import { useSlot, useDecorationsTick } from '../plugins/host';
+import type { Decoration, DecorationProvider, Segment } from '../plugins/types';
+
+type Mark = Extract<Decoration, { kind: 'mark' }>;
+type LineWidget = Extract<Decoration, { kind: 'lineWidget' }>;
+
+const stripTags = (html: string) => html.replace(/<[^>]+>/g, '');
+const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+// Sanitize once; keep data-deco (mark click delegation) + dir/class/the refLink data-ref the reader uses.
+const sanitize = (html: string) => DOMPurify.sanitize(html, { ADD_ATTR: ['data-ref', 'data-deco', 'target'] });
+
+/** Insert <mark> spans at plaintext offsets in an HTML string, preserving existing tags. Offsets index
+ *  the tag-stripped text; each mark carries data-deco=<index> for click delegation. A range crossing a
+ *  tag boundary is uncommon for word highlights, and DOMPurify normalizes any resulting nesting. */
+export function decorateHtml(html: string, marks: Mark[]): string {
+  if (!marks.length) return html;
+  const opensAt = new Map<number, string[]>();
+  const closesAt = new Map<number, string[]>();
+  marks.forEach((m, i) => {
+    const open = `<mark class="${escapeAttr(m.className ?? 'deco-mark')}" data-deco="${i}"${
+      m.title ? ` title="${escapeAttr(m.title)}"` : ''
+    }>`;
+    (opensAt.get(m.from) ?? opensAt.set(m.from, []).get(m.from)!).push(open);
+    (closesAt.get(m.to) ?? closesAt.set(m.to, []).get(m.to)!).push('</mark>');
+  });
+  let out = '';
+  let plain = 0;
+  let i = 0;
+  const flush = (offset: number) => {
+    if (closesAt.has(offset)) out += closesAt.get(offset)!.join('');
+    if (opensAt.has(offset)) out += opensAt.get(offset)!.join('');
+  };
+  while (i < html.length) {
+    if (html[i] === '<') {
+      const end = html.indexOf('>', i);
+      const stop = end === -1 ? html.length : end + 1;
+      out += html.slice(i, stop); // copy the whole tag verbatim (doesn't advance plaintext offset)
+      i = stop;
+    } else {
+      flush(plain);
+      out += html[i];
+      i += 1;
+      plain += 1;
+    }
+  }
+  flush(plain); // marks closing at end-of-text
+  return out;
+}
+
+export function SegmentText({
+  book,
+  segRef,
+  editionId,
+  lang,
+  html,
+  className,
+  dir,
+}: {
+  book: string;
+  segRef: string;
+  editionId: string;
+  lang: string;
+  html: string;
+  className: string;
+  dir: 'rtl' | 'ltr';
+}) {
+  const decorationProviders = useSlot<DecorationProvider>('viewer', 'decoration');
+  const tick = useDecorationsTick();
+  const seg = useMemo<Segment>(
+    () => ({ book, ref: segRef, editionId, lang, html, text: stripTags(html) }),
+    [book, segRef, editionId, lang, html]
+  );
+  const decos = useMemo(
+    () =>
+      decorationProviders.flatMap((p) => {
+        try {
+          return p.provide(seg);
+        } catch (e) {
+          console.error(`[decorations] provider "${p.id}" failed:`, e);
+          return [];
+        }
+      }),
+    // tick forces re-decoration when a provider signals 'decorations.changed'
+    [seg, decorationProviders, tick]
+  );
+  const marks = useMemo(() => decos.filter((d): d is Mark => d.kind === 'mark'), [decos]);
+  const lineWidgets = useMemo(() => decos.filter((d): d is LineWidget => d.kind === 'lineWidget'), [decos]);
+  const __html = useMemo(() => sanitize(decorateHtml(html, marks)), [html, marks]);
+
+  const onClick = marks.some((m) => m.onClick)
+    ? (e: ReactMouseEvent<HTMLParagraphElement>) => {
+        const el = (e.target as HTMLElement).closest('mark[data-deco]') as HTMLElement | null;
+        if (el) marks[Number(el.dataset.deco)]?.onClick?.(e.nativeEvent, seg);
+      }
+    : undefined;
+
+  const p = <p className={className} dir={dir} onClick={onClick} dangerouslySetInnerHTML={{ __html }} />;
+  if (!lineWidgets.length) return p;
+  return (
+    <div className="segment">
+      {lineWidgets.map((w, i) => (
+        <div key={i} className="deco-line">
+          {w.render(seg)}
+        </div>
+      ))}
+      {p}
+    </div>
+  );
+}
