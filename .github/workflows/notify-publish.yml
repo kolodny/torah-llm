@@ -1,0 +1,35 @@
+# torah-llm is the source of truth; torah-app publishes it. On every push to main that can affect the
+# build, ping torah-app to redeploy (it caches the corpus, so app-only changes redeploy in ~2-3 min).
+#
+# One-time setup: create a token that can dispatch to torah-app and store it here as a secret:
+#   - Make a fine-grained PAT scoped to kolodny/torah-app with "Contents: Read and write" (classic PAT:
+#     `repo` scope), then:  gh secret set TORAH_APP_DISPATCH_TOKEN -R kolodny/torah-llm
+# Until the secret exists this workflow succeeds with a skip message (no auto-deploy).
+
+name: Notify torah-app to publish
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LLM/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger torah-app deploy
+        env:
+          GH_TOKEN: ${{ secrets.TORAH_APP_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "TORAH_APP_DISPATCH_TOKEN not set — skipping. Add it to enable auto-deploy."
+            exit 0
+          fi
+          gh api -X POST repos/kolodny/torah-app/dispatches -f event_type=torah-llm-updated
+          echo "Dispatched torah-llm-updated → kolodny/torah-app"
