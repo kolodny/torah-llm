@@ -26,6 +26,17 @@ export type EditionInsert = {
 export interface IngestCtx {
   /** A canonical catalog node. INSERT OR IGNORE — the first source to define a node wins. */
   toc(row: TocInsert): void;
+  /**
+   * Place a Sefaria-absent work by grafting onto an EXISTING category branch. `path` is the full
+   * category chain (e.g. ['Tanakh','Modern Commentary on Tanakh','Biur']); ids are the ' / '-joined
+   * segments, matching Sefaria's spine. Returns the leaf id to use as the book's parent_id.
+   *
+   * Rules (these are what keep placement honest): the leaf may be new, but its PARENT must already
+   * exist — so Sefaria (ingested first) owns the branch you hang off. A new TOP-LEVEL root is refused;
+   * declare those once in build-master's HOUSE_CATEGORIES. We trust Sefaria's categories implicitly;
+   * ours are explicit.
+   */
+  category(path: string[], opts?: { he?: string | null; order?: number }): string;
   edition(row: EditionInsert): void;
   content(row: { editionId: string; tocId: string; ref: string; text: string }): void;
   meta(row: { tocId: string; schema: unknown }): void;

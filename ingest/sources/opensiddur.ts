@@ -119,12 +119,13 @@ async function fetchSubset() {
 }
 
 function ingest(ctx: IngestCtx) {
+  const parent = ctx.category([LITURGY]); // "Liturgy" is Sefaria's — this just validates it exists
   let total = 0;
   SIDDURIM.forEach((s, i) => {
     // New canonical book under the existing "Liturgy" category.
     ctx.toc({
       id: s.title,
-      parent_id: LITURGY,
+      parent_id: parent,
       kind: 'book',
       title_en: s.title,
       title_he: s.titleHe,

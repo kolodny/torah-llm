@@ -16,6 +16,11 @@ const API = 'https://he.wikisource.org/w/api.php';
 const UA = 'torah-llm/0.1 (research; per-page subset)';
 const INFO = 'Biur — Hebrew Wikisource modern commentary · CC BY-SA 4.0';
 
+// Biur is a modern Hebrew commentary on Tanakh — it fits inside Sefaria's spine, so we graft a "Biur"
+// folder onto Sefaria's existing "Modern Commentary on Tanakh" branch (ctx.category requires that parent
+// to already exist, i.e. Sefaria ingested first). No new top-level category needed.
+const BIUR_PATH = ['Tanakh', 'Modern Commentary on Tanakh', 'Biur'];
+
 // Whitelisted Biur pages → canonical English book. One page per chapter.
 const PAGES: { title: string; toc: string }[] = [
   { title: 'ביאור:בראשית א', toc: 'Genesis' },
@@ -104,9 +109,16 @@ function ingest(ctx: IngestCtx) {
   const byBook = new Map<string, string[]>(); // toc → page titles
   for (const { title, toc } of PAGES) (byBook.get(toc) ?? byBook.set(toc, []).get(toc)!).push(title);
 
+  // Graft the "Biur" folder onto Sefaria's Modern Commentary on Tanakh; each book hangs directly off it.
+  const parent = ctx.category(BIUR_PATH, { he: 'ביאור' });
+
   let total = 0;
   for (const [toc, titles] of byBook) {
     const book = `Biur on ${toc}`; // its own commentary book, linked to the base verses
+    // Hebrew base-book name straight from the Wikisource page title ("ביאור:בראשית א" → "בראשית"), so the
+    // viewer's Hebrew label reads "ביאור על בראשית" rather than mixing scripts.
+    const heBook = titles[0].replace(/^ביאור:/, '').replace(/\s+\S+$/, '').trim();
+    ctx.toc({ id: book, parent_id: parent, kind: 'book', title_en: book, title_he: `ביאור על ${heBook}`, category_en: null, category_he: null, order_index: null });
     const editionId = `${SRC}:${book}:he:Biur`;
     ctx.edition({ id: editionId, tocId: book, source: SRC, lang: 'he', title: 'Biur (Wikisource)', info: INFO, orderIndex: 0 });
     for (const title of titles) {

@@ -39,13 +39,49 @@ const insertLink = db.prepare(
   `INSERT OR IGNORE INTO links (from_id, from_ref, to_id, to_ref, connection_type) VALUES (?, ?, ?, ?, ?)`
 );
 
+const tocExists = db.prepare(`SELECT 1 FROM toc WHERE id = ?`).pluck();
+
 const ctx: IngestCtx = {
   toc: (r) => insertToc.run(r),
+  // Graft a work's grouping onto an existing branch (see IngestCtx.category for the contract).
+  category: (path, opts = {}) => {
+    if (!path.length) throw new Error('ctx.category() requires a non-empty path');
+    const id = path.join(' / ');
+    if (tocExists.get(id)) return id; // already in the spine (Sefaria, a house root, or an earlier call)
+    if (path.length === 1)
+      throw new Error(
+        `Refusing to create top-level category "${id}" ad-hoc. Declare it once in HOUSE_CATEGORIES ` +
+          `(build-master.ts) — we trust Sefaria's top categories implicitly; ours must be explicit.`
+      );
+    const parent = path.slice(0, -1).join(' / ');
+    if (!tocExists.get(parent))
+      throw new Error(
+        `Cannot place "${id}": parent "${parent}" does not exist. Ensure Sefaria is ingested first ` +
+          `(it owns that branch), or fix the path.`
+      );
+    insertToc.run({ id, parent_id: parent, kind: 'category', title_en: null, title_he: null, category_en: path[path.length - 1], category_he: opts.he ?? null, order_index: opts.order ?? null });
+    return id;
+  },
   edition: (r) => insertEdition.run(r),
   content: (r) => insertContent.run(r.editionId, r.tocId, r.ref, r.text),
   meta: (r) => insertMeta.run(r.tocId, JSON.stringify(r.schema)),
   link: (r) => insertLink.run(r.fromId, r.fromRef, r.toId, r.toRef, r.connectionType),
 };
+
+// Our own top-level categories — the ONLY non-Sefaria roots, all declared here in one place so the
+// catalog's top level stays auditable. Everything else must nest under an existing branch via
+// ctx.category(), which refuses to invent new roots. Seeded upfront, before any adapter runs.
+const HOUSE_CATEGORIES: { id: string; he: string | null; order: number }[] = [
+  { id: 'Dicta Library', he: 'ספריית דיקטא', order: 900 },
+];
+for (const c of HOUSE_CATEGORIES)
+  insertToc.run({ id: c.id, parent_id: null, kind: 'category', title_en: null, title_he: null, category_en: c.id, category_he: c.he, order_index: c.order });
+
+// Sefaria must run first: it lays down the canonical category spine that every other source grafts onto
+// (Tanakh / Rishonim on Tanakh / …). ctx.category() enforces "parent exists" downstream, but assert the
+// order here for a clear failure rather than a confusing missing-parent error.
+if (adapters[0]?.id !== 'sefaria')
+  throw new Error('Sefaria must be the first adapter so its category spine exists before other works are placed under it.');
 
 for (const adapter of adapters) {
   console.log(`Ingesting ${adapter.name}…`);
@@ -67,13 +103,18 @@ db.exec(`
      OR NOT EXISTS (SELECT 1 FROM content c WHERE c.toc_id = links.to_id   AND c.ref = links.to_ref)
 `);
 
-// Safety net: a minimal canonical node for any edition whose book isn't in the catalog spine.
-db.exec(`
-  INSERT OR IGNORE INTO toc (id, kind, title_en)
-  SELECT DISTINCT e.toc_id, 'book', e.toc_id
-  FROM editions e LEFT JOIN toc t ON t.id = e.toc_id
-  WHERE t.id IS NULL
-`);
+// Every book MUST be placed. A book with editions but no toc node would orphan at the catalog root —
+// we no longer paper over that with a synthesized stub; we fail the build so the gap can't ship silently.
+// Fix by attaching the edition to an existing Sefaria tocId, or by calling ctx.category(...) to graft it.
+const orphans = db
+  .prepare(`SELECT DISTINCT e.toc_id FROM editions e LEFT JOIN toc t ON t.id = e.toc_id WHERE t.id IS NULL ORDER BY e.toc_id`)
+  .all() as { toc_id: string }[];
+if (orphans.length)
+  throw new Error(
+    `${orphans.length} book(s) have editions but no TOC node (would orphan at the catalog root):\n` +
+      orphans.map((o) => `  • ${o.toc_id}`).join('\n') +
+      `\nPlace each one: attach its edition to an existing Sefaria tocId, or call ctx.category(path) and set the book's parent_id.`
+  );
 
 // Flag content-bearing books and count their editions.
 db.exec(`

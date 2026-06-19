@@ -13,7 +13,7 @@ const SRC = 'dicta-library';
 const root = resolve(import.meta.dirname, '../../');
 const DIR = resolve(root, 'data/dicta-library');
 const HOST = 'https://files.dicta.org.il/library-1-0';
-const LIB = 'Dicta Library'; // a new top-level category for these (Sefaria-absent) books
+const LIB = 'Dicta Library'; // top-level root (Sefaria-absent corpus) — declared in build-master HOUSE_CATEGORIES
 
 const GEM: Record<string, number> = {
   א: 1, ב: 2, ג: 3, ד: 4, ה: 5, ו: 6, ז: 7, ח: 8, ט: 9,
@@ -81,19 +81,12 @@ function parseBook(dir: string): { ref: string; text: string }[] {
 }
 
 function ingest(ctx: IngestCtx) {
-  ctx.toc({
-    id: LIB,
-    parent_id: null,
-    kind: 'category',
-    title_en: null,
-    title_he: null,
-    category_en: LIB,
-    category_he: 'ספריית דיקטא',
-    order_index: 900,
-  });
+  // These books aren't in Sefaria, so "Dicta Library" is a top-level root — declared upfront in
+  // build-master's HOUSE_CATEGORIES. Here we just hang the books off it.
+  const parent = ctx.category([LIB]);
   let total = 0;
   for (const b of BOOKS) {
-    ctx.toc({ id: b.title, parent_id: LIB, kind: 'book', title_en: b.title, title_he: b.he, category_en: null, category_he: null, order_index: 0 });
+    ctx.toc({ id: b.title, parent_id: parent, kind: 'book', title_en: b.title, title_he: b.he, category_en: null, category_he: null, order_index: 0 });
     const editionId = `${SRC}:${b.title}:he:Dicta`;
     ctx.edition({ id: editionId, tocId: b.title, source: SRC, lang: 'he', title: 'Dicta (OCR)', info: `${b.by} · Dicta Library · CC BY-SA 4.0 · AI-OCR`, orderIndex: 0 });
     for (const { ref, text } of parseBook(resolve(DIR, b.fileName))) {
