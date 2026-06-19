@@ -21,8 +21,13 @@ import { sliceFileName, TOC_DB } from '../shared/slice-path.ts';
 
 const BOOT_ONLY = !!process.env.BOOT_ONLY;
 const root = resolve(import.meta.dirname, '..');
-const masterPath = resolve(root, 'data', 'master.sqlite');
-const outDir = resolve(root, 'public', 'db');
+// Slice from a specific master (e.g. data/publish-master.sqlite for the published subset) into a specific
+// output dir; both default to the full source-of-truth master → public/db.
+const masterPath = process.env.MASTER ? resolve(process.env.MASTER) : resolve(root, 'data', 'master.sqlite');
+const outDir = process.env.OUT ? resolve(process.env.OUT) : resolve(root, 'public', 'db');
+// Per-book slices are write-once transport: their rows are merged into the client cache (which keeps its own
+// indexes) on download, so a slice's own indexes are never queried. Ship slices index-free to save ~10%.
+const SLICE_SCHEMA = SCHEMA_SQL.split('\n').filter((l) => !/CREATE (UNIQUE )?INDEX/i.test(l)).join('\n');
 const attach = (p: string) => `ATTACH DATABASE '${p.replace(/'/g, "''")}' AS master`;
 
 if (!BOOT_ONLY) rmSync(outDir, { recursive: true, force: true });
@@ -76,7 +81,7 @@ for (const { id } of books) {
   let size = 0;
   if (!BOOT_ONLY) {
     const slice = new Database(file);
-    slice.exec(SCHEMA_SQL);
+    slice.exec(SLICE_SCHEMA);
     slice.exec(attach(masterPath));
     slice.prepare(`INSERT INTO editions SELECT * FROM master.editions WHERE toc_id = ?`).run(id);
     slice.prepare(`INSERT INTO content  SELECT * FROM master.content  WHERE toc_id = ?`).run(id);
@@ -122,6 +127,18 @@ for (const { id } of books) {
   }
 }
 
+// Catalog fingerprint: a hash over the full shipped TOC spine — structure, titles, categories, order,
+// not just book content. Folded into publishId below so that re-parenting, renames, and new category
+// nodes ALSO bump the publish and reach already-cached clients via reconcile() (which INSERT OR REPLACEs
+// the toc). Without it, a pure catalog change leaves content_version untouched and is invisible to them.
+const catHash = createHash('sha256');
+const catRows = master
+  .prepare(`SELECT id, parent_id, kind, title_en, title_he, category_en, category_he, order_index FROM toc ORDER BY id`)
+  .all() as Record<string, unknown>[];
+for (const r of catRows)
+  if (keep.has(r.id as string)) catHash.update(Object.values(r).map((v) => v ?? '\x00').join('\x1e') + '\n');
+const catalogVersion = catHash.digest('hex').slice(0, 16);
+
 const tocDbPath = resolve(outDir, TOC_DB);
 rmSync(tocDbPath, { force: true }); // rebuild fresh (no-op in full mode; replaces stale in BOOT_ONLY)
 const tocDb = new Database(tocDbPath);
@@ -146,11 +163,11 @@ writeFileSync(`${tocDbPath}.gz`, tocGz);
 rmSync(tocDbPath, { force: true });
 const tocSize = tocGz.length;
 
-// publishId changes iff any book's content_version changed → the client knows to refresh the
-// catalog (and lazily re-merge the books that actually differ) without a wipe.
+// publishId changes iff the catalog structure OR any book's content_version changed → the client knows
+// to refresh the catalog (and lazily re-merge the books that actually differ) without a wipe.
 versions.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 const publishId = createHash('sha256')
-  .update(versions.map(([id, v]) => `${id}=${v}`).join('\n'))
+  .update(`catalog=${catalogVersion}\n` + versions.map(([id, v]) => `${id}=${v}`).join('\n'))
   .digest('hex')
   .slice(0, 16);
 writeFileSync(

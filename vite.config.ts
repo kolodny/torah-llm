@@ -3,7 +3,9 @@ import react from '@vitejs/plugin-react';
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/',
+  // '/' for local dev; the Pages deploy sets PAGES_BASE='/torah-app/' (project page). The DB worker reads
+  // import.meta.env.BASE_URL to locate db/, so this drives both the app's asset URLs and the corpus URLs.
+  base: process.env.PAGES_BASE || '/',
   plugins: [react()],
   // sqlite-wasm ships its own .wasm + worker glue; let it resolve at runtime.
   optimizeDeps: { exclude: ['@sqlite.org/sqlite-wasm'] },
