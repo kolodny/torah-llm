@@ -77,12 +77,15 @@ LIMIT 25;`,
   },
   {
     label: 'A word with two cantillation marks (Torah)',
-    sql: `-- A single WORD bearing two DISTINCT cantillation marks (ta'amei ha'mikra, U+0591–U+05AF) — a real
--- pair such as a conjunctive + disjunctive (e.g. munaḥ + zaqef), NOT the same accent doubled for layout
--- (a repeated pashta or telisha). new Set(...) dedupes; strip() drops HTML, leaving the cantillated text.
+    sql: `-- A WORD with two genuinely distinct DISJUNCTIVE te'amim — the rare case of two real accents on one
+-- word. It skips the ordinary ways a word shows two mark glyphs: a conjunctive "servant" + its disjunctive
+-- (munaḥ+zaqef, qadma+geresh); the same accent doubled for layout (pashta ֙֙ / telisha ֠֠); and zarqa↔zinor
+-- (one accent, two positional codepoints). Tokens split on spaces + maqaf; evalJS counts marks in
+-- U+0591–U+05AE, drops conjunctives (U+05A3–U+05AA = 1443–1450), merges zinor(1454)→zarqa(1432), needs ≥2.
+-- (e.g. Genesis 35:22 רְאוּבֵן, 5:29 זֶה.) Select toc_id + ref to auto-link the verse.
 SELECT * FROM (
   SELECT c.toc_id, c.ref,
-         evalJS('(value.match(/\\S+/g) || []).find(w => new Set(w.match(/[\\u0591-\\u05AF]/g) || []).size >= 2) || null', strip(c.text)) AS word
+         evalJS('(value.match(/[^\\s\\u05be]+/g)||[]).find(function(w){var C=new Set([1443,1444,1445,1446,1447,1448,1449,1450]);var s=new Set();for(var i=0;i<w.length;i++){var cp=w.charCodeAt(i);if(cp>=1425&&cp<=1454&&!C.has(cp))s.add(cp===1454?1432:cp);}return s.size>=2;})||null', strip(c.text)) AS word
   FROM content c JOIN editions e ON e.id = c.edition_id
   WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
 )
