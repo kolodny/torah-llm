@@ -76,6 +76,20 @@ ORDER BY pazer_count DESC
 LIMIT 25;`,
   },
   {
+    label: 'A word with two cantillation marks (Torah)',
+    sql: `-- A single WORD bearing two DISTINCT cantillation marks (ta'amei ha'mikra, U+0591–U+05AF) — a real
+-- pair such as a conjunctive + disjunctive (e.g. munaḥ + zaqef), NOT the same accent doubled for layout
+-- (a repeated pashta or telisha). new Set(...) dedupes; strip() drops HTML, leaving the cantillated text.
+SELECT * FROM (
+  SELECT c.toc_id, c.ref,
+         evalJS('(value.match(/\\S+/g) || []).find(w => new Set(w.match(/[\\u0591-\\u05AF]/g) || []).size >= 2) || null', strip(c.text)) AS word
+  FROM content c JOIN editions e ON e.id = c.edition_id
+  WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+)
+WHERE word IS NOT NULL
+LIMIT 25;`,
+  },
+  {
     label: 'Largest downloaded books (by verse count)',
     sql: `-- Which downloaded books have the most segments?
 SELECT toc_id, COUNT(DISTINCT ref) AS verses
