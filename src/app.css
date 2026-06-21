@@ -473,6 +473,14 @@ mark.gematria-hit { background: #ffe08a; border-radius: 3px; padding: 0 1px; box
 .viewer-side .peek, .viewer-side .panel { position: static; border: 0; border-radius: 0; max-height: none; }
 @media (max-width: 1000px) { .viewer-page > .catalog { flex-basis: 240px; } .viewer-side { flex-basis: 300px; } }
 
+/* mobile (<48em): the catalog + right-rail move into Drawers; the reader is full-width */
+.viewer-page.mobile { display: block; height: calc(100vh - 56px); }
+.viewer-page.mobile > .viewer { height: 100%; padding: 14px 16px 88px; }
+.aside-fab { position: fixed; right: 16px; bottom: 16px; z-index: 360; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }
+/* the right-rail fills its drawer (no fixed flex-basis / border when drawer-hosted) */
+.aside-drawer-body { padding: 0 !important; }
+.aside-drawer-body .viewer-side { height: 100%; border: 0; flex: 1 1 auto; }
+
 .storage-page { height: calc(100vh - 56px); display: flex; flex-direction: column; padding: 16px 22px; }
 .storage-tree { flex: 1 1 0; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
 
@@ -482,6 +490,10 @@ mark.gematria-hit { background: #ffe08a; border-radius: 3px; padding: 0 1px; box
 /* a generic plugin page wrapper (gematria search, code search) */
 .plugin-page { height: calc(100vh - 56px); overflow: auto; padding: 18px 28px 64px; max-width: 900px; }
 .plugin-page h2 { margin: 0 0 12px; }
+@media (max-width: 48em) {
+  .plugin-page { padding: 12px 14px 64px; }
+  .storage-page { padding: 12px 14px; }
+}
 
 /* torah-code ELS matrix — a plugin cell renderer on the Code page results table */
 .torah-code-matrix { border-collapse: collapse; line-height: 1; }

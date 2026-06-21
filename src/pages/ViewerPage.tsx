@@ -13,7 +13,8 @@ import { DndContext, PointerSensor, KeyboardSensor, useSensor, useSensors, close
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, sortableKeyboardCoordinates, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { SegmentedControl, Tabs, Menu, ActionIcon, Button, Paper, Group, Loader } from '@mantine/core';
+import { SegmentedControl, Tabs, Menu, ActionIcon, Button, Paper, Group, Loader, Drawer } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
 import { getToc, getLocalBookIds, getEditions, getContent, getSiblings, getLinks, getMeta, ensureBook } from '../db/client';
 import type { TocRow, Edition, ContentRow, LinkRef } from '../db/types';
 import { coreContext, useSlot, usePublishReader } from '../plugins/host';
@@ -198,6 +199,12 @@ export default function ViewerPage() {
     return () => cancelAnimationFrame(raf);
   }, [ref, content]);
 
+  // Mobile: opening a book (incl. via the catalog's react-router <Link>, which bypasses dispatch) closes
+  // the catalog drawer so the reader is visible. No-op at desktop widths (navOpen is ignored there).
+  useEffect(() => {
+    dispatch({ type: 'setNav', open: false });
+  }, [book, dispatch]);
+
   const tree = useMemo(() => (toc ? buildTree(toc) : []), [toc]);
   const selectedNode = useMemo(() => toc?.find((t) => t.id === book) ?? null, [toc, book]);
   const openPath = useMemo(() => {
@@ -221,51 +228,92 @@ export default function ViewerPage() {
 
   const viewerRef = useRef<HTMLElement>(null);
 
-  return (
-    <div className="viewer-page">
-      <nav className="catalog" aria-label="Catalog">
-        {!toc && <p className="muted">Loading catalog…</p>}
-        {tree.map((node) => (
-          <Tree key={node.id} node={node} local={local} selected={book} depth={0} openPath={openPath} />
-        ))}
-      </nav>
+  // Responsive: full flex row on desktop; catalog + right-rail become Drawers on mobile (≥48em = Mantine sm).
+  const isDesktop = useMediaQuery('(min-width: 48em)', typeof window !== 'undefined' ? window.innerWidth >= 768 : true);
+  const sidebarPanels = useSlot<SidebarPanel>('viewer', 'sidebar');
+  const hasSidebar = !!state.peek || sidebarPanels.length > 0;
 
-      <main className="viewer" ref={viewerRef}>
-        {error && <div className="error" role="alert">{error}</div>}
-        {!selectedNode && <p className="muted">Select a book from the catalog. Manage downloads in the Storage tab.</p>}
-        {selectedNode && (
-          <>
-            <h2>
-              {selectedNode.title_en}
-              {selectedNode.title_he && <span className="he"> · {selectedNode.title_he}</span>}
-            </h2>
-            {notLocal ? (
-              <Paper withBorder p="lg" radius="md" mt="md" maw={520}>
-                <p className="muted" style={{ marginTop: 0 }}>
-                  <strong>{selectedNode.title_en}</strong> isn’t downloaded yet ({fmtBytes(selectedNode.file_size) || 'small'}).
-                </p>
-                <Group>
-                  <Button onClick={download} loading={!!downloading} color="orange">
-                    {downloading ? `Downloading ${downloading}` : 'Download this book'}
-                  </Button>
-                  <Button variant="default" onClick={() => dispatch({ type: 'setPage', id: 'storage' })}>
-                    Manage in Storage
-                  </Button>
-                </Group>
-              </Paper>
-            ) : content ? (
-              <EditorHost view={view} />
-            ) : (
-              <p className="muted" data-testid="status">
-                <Loader size="xs" /> Loading…
+  const catalogInner = (
+    <>
+      {!toc && <p className="muted">Loading catalog…</p>}
+      {tree.map((node) => (
+        <Tree key={node.id} node={node} local={local} selected={book} depth={0} openPath={openPath} />
+      ))}
+    </>
+  );
+
+  const reader = (
+    <main className="viewer" ref={viewerRef}>
+      {error && <div className="error" role="alert">{error}</div>}
+      {!selectedNode && <p className="muted">Select a book from the catalog. Manage downloads in the Storage tab.</p>}
+      {selectedNode && (
+        <>
+          <h2>
+            {selectedNode.title_en}
+            {selectedNode.title_he && <span className="he"> · {selectedNode.title_he}</span>}
+          </h2>
+          {notLocal ? (
+            <Paper withBorder p="lg" radius="md" mt="md" maw={520}>
+              <p className="muted" style={{ marginTop: 0 }}>
+                <strong>{selectedNode.title_en}</strong> isn’t downloaded yet ({fmtBytes(selectedNode.file_size) || 'small'}).
               </p>
-            )}
-          </>
-        )}
-        <TextSelectTooltip containerRef={viewerRef} />
-      </main>
+              <Group>
+                <Button onClick={download} loading={!!downloading} color="orange">
+                  {downloading ? `Downloading ${downloading}` : 'Download this book'}
+                </Button>
+                <Button variant="default" onClick={() => dispatch({ type: 'setPage', id: 'storage' })}>
+                  Manage in Storage
+                </Button>
+              </Group>
+            </Paper>
+          ) : content ? (
+            <EditorHost view={view} />
+          ) : (
+            <p className="muted" data-testid="status">
+              <Loader size="xs" /> Loading…
+            </p>
+          )}
+        </>
+      )}
+      <TextSelectTooltip containerRef={viewerRef} />
+    </main>
+  );
 
-      <ViewerSidebar peek={state.peek} reader={readerCtx} />
+  const aside = <ViewerSidebar peek={state.peek} reader={readerCtx} />;
+
+  if (isDesktop) {
+    return (
+      <div className="viewer-page">
+        <nav className="catalog" aria-label="Catalog">{catalogInner}</nav>
+        {reader}
+        {hasSidebar && aside}
+      </div>
+    );
+  }
+
+  // Mobile: reader is full-width; the catalog and the right-rail slide in as drawers.
+  return (
+    <div className="viewer-page mobile">
+      {reader}
+      {hasSidebar && (
+        <ActionIcon
+          className="aside-fab"
+          variant="filled"
+          color="orange"
+          radius="xl"
+          size="xl"
+          onClick={() => dispatch({ type: 'toggleAside' })}
+          aria-label="Open panels"
+        >
+          ☰
+        </ActionIcon>
+      )}
+      <Drawer opened={state.navOpen} onClose={() => dispatch({ type: 'setNav', open: false })} position="left" size="85%" title="Catalog" padding="sm" zIndex={350}>
+        {catalogInner}
+      </Drawer>
+      <Drawer opened={state.asideOpen && hasSidebar} onClose={() => dispatch({ type: 'setAside', open: false })} position="right" size="92%" title="Panels" padding={0} zIndex={350} classNames={{ body: 'aside-drawer-body' }}>
+        {aside}
+      </Drawer>
     </div>
   );
 }

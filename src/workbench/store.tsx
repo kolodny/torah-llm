@@ -35,6 +35,8 @@ export type WorkbenchState = {
   sidebarPanelId: string | null; // the open right-rail panel, if any
   editorId: string | null; // the chosen main-view editor (null = auto-pick highest canRender)
   selection: Selection; // current text selection (for plugins)
+  navOpen: boolean; // mobile: the catalog drawer is open (ignored at desktop widths)
+  asideOpen: boolean; // mobile: the right-rail (peek/panels) drawer is open
 };
 
 /** Everything that mutates the workbench goes through one of these. */
@@ -48,11 +50,15 @@ export type WorkbenchAction =
   | { type: 'closePanel' }
   | { type: 'setEditor'; id: string | null } // choose the main-view editor (null = auto)
   | { type: 'setSelection'; selection: Selection }
-  | { type: 'toast'; message: string | null };
+  | { type: 'toast'; message: string | null }
+  | { type: 'toggleNav' } // mobile: toggle the catalog drawer
+  | { type: 'setNav'; open: boolean }
+  | { type: 'toggleAside' } // mobile: toggle the right-rail drawer
+  | { type: 'setAside'; open: boolean };
 
 // --- local (non-URL) state --------------------------------------------------------------------
-type LocalState = { sidebarPanelId: string | null; editorId: string | null; selection: Selection; toast: string | null };
-const initialLocal: LocalState = { sidebarPanelId: null, editorId: null, selection: null, toast: null };
+type LocalState = { sidebarPanelId: string | null; editorId: string | null; selection: Selection; toast: string | null; navOpen: boolean; asideOpen: boolean };
+const initialLocal: LocalState = { sidebarPanelId: null, editorId: null, selection: null, toast: null, navOpen: false, asideOpen: false };
 
 function localReducer(s: LocalState, a: WorkbenchAction): LocalState {
   switch (a.type) {
@@ -60,6 +66,14 @@ function localReducer(s: LocalState, a: WorkbenchAction): LocalState {
       return { ...s, sidebarPanelId: a.id };
     case 'closePanel':
       return { ...s, sidebarPanelId: null };
+    case 'toggleNav':
+      return { ...s, navOpen: !s.navOpen };
+    case 'setNav':
+      return { ...s, navOpen: a.open };
+    case 'toggleAside':
+      return { ...s, asideOpen: !s.asideOpen };
+    case 'setAside':
+      return { ...s, asideOpen: a.open };
     case 'setEditor':
       return { ...s, editorId: a.id };
     case 'setSelection':
@@ -105,6 +119,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
             p.delete('pr');
             return p;
           });
+          localDispatch({ type: 'setNav', open: false }); // mobile: picking a book closes the catalog drawer
           break;
         case 'setEditions':
           setParams(
@@ -125,6 +140,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
             else p.delete('pr');
             return p;
           });
+          localDispatch({ type: 'setAside', open: true }); // mobile: a cross-ref preview opens the right drawer
           break;
         case 'clearPeek':
           setParams((prev) => {
@@ -158,8 +174,10 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       sidebarPanelId: local.sidebarPanelId,
       editorId: local.editorId,
       selection: local.selection,
+      navOpen: local.navOpen,
+      asideOpen: local.asideOpen,
     }),
-    [page, book, ref, edKey, peekBook, peekRef, local.sidebarPanelId, local.editorId, local.selection]
+    [page, book, ref, edKey, peekBook, peekRef, local.sidebarPanelId, local.editorId, local.selection, local.navOpen, local.asideOpen]
   );
 
   // Auto-dismiss a toast a few seconds after it's set.

@@ -2,7 +2,7 @@
 // renders itself (and reads its own slots). Core registers the "viewer" + "storage" pages; plugins can
 // register more (a clobbered page id is rejected by the host). No reader logic lives here anymore.
 import { createElement } from 'react';
-import { AppShell, Tabs, Group, Title, Button } from '@mantine/core';
+import { AppShell, Tabs, Group, Title, Button, Burger, Box, Menu, ActionIcon } from '@mantine/core';
 import { useWorkbench } from './workbench/store';
 import { PluginProvider, usePages, coreContext } from './plugins/host';
 import type { PageDef } from './plugins/types';
@@ -33,25 +33,40 @@ function Shell() {
   const { state, dispatch } = useWorkbench();
   const pages = usePages();
   const active = pages.find((p) => p.id === state.page) ?? pages[0] ?? null;
+  const wipeDb = () => void wipe().then(() => location.reload());
   return (
     <AppShell header={{ height: 56 }} padding={0}>
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between" wrap="nowrap">
-          <Group gap="xl" wrap="nowrap" style={{ minWidth: 0 }}>
-            <Title order={4} style={{ whiteSpace: 'nowrap' }}>תורה · Torah</Title>
+        <Group h="100%" px="sm" gap="xs" wrap="nowrap">
+          {active?.id === 'viewer' && (
+            <Burger opened={state.navOpen} onClick={() => dispatch({ type: 'toggleNav' })} hiddenFrom="sm" size="sm" aria-label="Toggle catalog" />
+          )}
+          <Title order={4} style={{ whiteSpace: 'nowrap' }}>
+            תורה<Box component="span" visibleFrom="xs"> · Torah</Box>
+          </Title>
+          {/* Tabs scroll horizontally if they ever overflow; labels collapse to icons on mobile. */}
+          <Box style={{ flex: 1, minWidth: 0, overflowX: 'auto', scrollbarWidth: 'none' }}>
             <Tabs value={active?.id ?? null} onChange={(v) => v && dispatch({ type: 'setPage', id: v })} variant="pills">
-              <Tabs.List>
+              <Tabs.List style={{ flexWrap: 'nowrap' }}>
                 {pages.map((p) => (
-                  <Tabs.Tab key={p.id} value={p.id} leftSection={p.icon}>
-                    {p.title}
+                  <Tabs.Tab key={p.id} value={p.id} leftSection={<span style={{ fontSize: 15 }}>{p.icon}</span>}>
+                    <Box component="span" visibleFrom="sm">{p.title}</Box>
                   </Tabs.Tab>
                 ))}
               </Tabs.List>
             </Tabs>
-          </Group>
-          <Button variant="subtle" color="gray" size="xs" onClick={() => void wipe().then(() => location.reload())}>
+          </Box>
+          <Button variant="subtle" color="gray" size="xs" visibleFrom="sm" onClick={wipeDb}>
             Wipe local DB
           </Button>
+          <Menu position="bottom-end" withinPortal shadow="md">
+            <Menu.Target>
+              <ActionIcon variant="subtle" color="gray" hiddenFrom="sm" aria-label="More actions">⋯</ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item color="red" onClick={wipeDb}>Wipe local DB</Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         </Group>
       </AppShell.Header>
       <AppShell.Main>{active && <PageHost key={active.id} page={active} />}</AppShell.Main>
