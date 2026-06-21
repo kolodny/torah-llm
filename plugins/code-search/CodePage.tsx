@@ -77,16 +77,24 @@ LIMIT 25;`,
   },
   {
     label: 'A word with two cantillation marks (Torah)',
-    sql: `-- Words carrying two genuinely distinct DISJUNCTIVE te'amim — the famous double-cantillation cases:
--- the Ten Commandments' dual ta'am elyon/taḥton (Exodus 20, Deuteronomy 5) and the Reuben pisḳa
--- (Genesis 35:22). It skips the ordinary ways a word shows two mark glyphs: a conjunctive servant + its
--- disjunctive (munaḥ+zaqef, qadma+geresh); the same accent doubled for layout (pashta / telisha); and
--- zarqa↔zinor (one accent, two positional codepoints). Tokens split on spaces, maqaf, paseq, and HTML
--- spacing entities (poetic layout); evalJS keeps marks U+0591–U+05AE, drops conjunctives (1443–1450),
--- merges zinor(1454)→zarqa(1432), needs ≥2 distinct. Select toc_id + ref to auto-link the verse.
+    sql: `-- Words with two distinct DISJUNCTIVE te'amim — the famous double-cantillation cases: the Ten
+-- Commandments' dual ta'am elyon/taḥton (Exodus 20, Deuteronomy 5) and the Reuben pisḳa (Genesis 35:22).
+-- evalJS returns the first word that carries two distinct disjunctive accents — dropping the conjunctive
+-- "servants" and counting zinor as zarqa, so servant+disjunctive / doubled / positional pairs don't count.
 SELECT * FROM (
-  SELECT c.toc_id, c.ref,
-         evalJS('(value.replace(/&(?:[a-z0-9]+|#\\d+);/gi," ").match(/[^\\s\\u05be\\u05c0]+/g)||[]).find(function(w){var C=new Set([1443,1444,1445,1446,1447,1448,1449,1450]);var s=new Set();for(var i=0;i<w.length;i++){var cp=w.charCodeAt(i);if(cp>=1425&&cp<=1454&&!C.has(cp))s.add(cp===1454?1432:cp);}return s.size>=2;})||null', strip(c.text)) AS word
+  SELECT c.toc_id, c.ref, evalJS('(function () {
+    var CONJUNCTIVES = new Set([0x5A3, 0x5A4, 0x5A5, 0x5A6, 0x5A7, 0x5A8, 0x5A9, 0x5AA]);  // meshartim (servants)
+    var words = value.replace(/&(?:[a-z0-9]+|#\\d+);/gi, " ")   // HTML spacing entities -> space
+                     .split(/[\\s\\u05be\\u05c0]+/);            // split on space, maqaf, paseq
+    return words.find(function (w) {
+      var accents = new Set();
+      for (var i = 0; i < w.length; i++) {
+        var cp = w.charCodeAt(i);
+        if (cp >= 0x591 && cp <= 0x5AE && !CONJUNCTIVES.has(cp)) accents.add(cp === 0x5AE ? 0x598 : cp);
+      }
+      return accents.size >= 2;
+    }) || null;
+  })()', strip(c.text)) AS word
   FROM content c JOIN editions e ON e.id = c.edition_id
   WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
 )
