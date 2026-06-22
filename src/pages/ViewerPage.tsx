@@ -6,7 +6,7 @@
 //   viewer:linkAction   — an action on a cross-reference link
 //   viewer:decoration   — handled in workbench/segment.tsx (gematria highlight, note pins)
 // No autodownload: a book renders only if it's already local; otherwise the page prompts to download.
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router';
 import { DndContext, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core';
@@ -15,7 +15,7 @@ import { SortableContext, horizontalListSortingStrategy, useSortable, sortableKe
 import { CSS } from '@dnd-kit/utilities';
 import { SegmentedControl, Tabs, Menu, ActionIcon, Button, Paper, Group, Loader, Drawer } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
-import { getToc, getLocalBookIds, getEditions, getContent, getSiblings, getLinks, getMeta, ensureBook } from '../db/client';
+import { getToc, getLocalBookIds, getEditions, getSiblings, getMeta, ensureBook, hasLocalContent, getBookSections, getSectionContent, getSectionLinks } from '../db/client';
 import type { TocRow, Edition, ContentRow, LinkRef } from '../db/types';
 import { coreContext, useSlot, usePublishReader } from '../plugins/host';
 import type { ReaderContext, BookView, EditorDef, Verse, VerseAction, LinkInfo, LinkAction, SidebarPanel, TextSelectAction, TextSelection } from '../plugins/types';
@@ -91,6 +91,13 @@ const cmpRef = (a: string, b: string) => {
 const RTL_LANGS = new Set(['he', 'arc', 'yi', 'ar', 'jrb']);
 
 // === the page ================================================================================
+const sectionKeyOf = (ref: string) => ref.split(':')[0];
+const mergeLinks = (a: Record<string, LinkRef[]>, b: Record<string, LinkRef[]>) => {
+  const out: Record<string, LinkRef[]> = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = out[k] ? [...out[k], ...v] : v;
+  return out;
+};
+
 export default function ViewerPage() {
   const { state, dispatch } = useWorkbench();
   const { book, ref } = state;
@@ -98,12 +105,25 @@ export default function ViewerPage() {
   const [toc, setToc] = useState<TocRow[] | null>(null);
   const [local, setLocal] = useState<Set<string>>(new Set());
   const [editions, setEditions] = useState<Edition[]>([]);
-  const [content, setContent] = useState<ContentRow[] | null>(null);
+  const [sectionKeys, setSectionKeys] = useState<string[] | null>(null); // the ordered section ladder
+  const [loaded, setLoaded] = useState<{ start: number; end: number } | null>(null); // window of loaded sections (indices into sectionKeys)
+  const [content, setContent] = useState<ContentRow[]>([]); // rows for the loaded window only
   const [links, setLinks] = useState<Record<string, LinkRef[]>>({});
-  const [sections, setSections] = useState<string[]>([]);
+  const [sections, setSections] = useState<string[]>([]); // meta section names (Chapter/Verse…)
+  const [loadingMore, setLoadingMore] = useState<'up' | 'down' | null>(null);
   const [notLocal, setNotLocal] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const viewerRef = useRef<HTMLElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement>(null);
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
+  const loadingRef = useRef(false); // dedupe concurrent infinite-scroll loads
+  const prependAdjustRef = useRef<{ h: number; t: number } | null>(null); // scroll restore after prepend
+  const actedRef = useRef<string | null>(null); // the ref we've already navigated/scrolled to (or set from scroll)
+  const scrolledForRef = useRef<string | null>(null); // last ref we scrolled+flashed to
 
   const refreshLocal = useCallback(async () => setLocal(new Set(await getLocalBookIds())), []);
   useEffect(() => {
@@ -117,62 +137,153 @@ export default function ViewerPage() {
     })();
   }, [refreshLocal]);
 
-  const loadBookData = useCallback(async (b: string) => {
-    const [eds, rows, linkMap, meta] = await Promise.all([getEditions(b), getContent(b), getLinks(b), getMeta(b)]);
+  // Load one section's rows + links (the unit of pagination).
+  const fetchSection = useCallback(
+    async (b: string, key: string) => {
+      const [rows, lnk] = await Promise.all([getSectionContent(b, key), getSectionLinks(b, key)]);
+      return { rows, lnk };
+    },
+    []
+  );
+
+  // Open a book: load its editions/meta + the (cheap, text-free) section ladder. The verses for the
+  // initial section are loaded by the navigation effect below — never the whole book at once.
+  const loadBookSkeleton = useCallback(async (b: string) => {
+    if (!(await hasLocalContent(b))) {
+      setNotLocal(true);
+      return false;
+    }
+    const [eds, meta, secs] = await Promise.all([getEditions(b), getMeta(b), getBookSections(b)]);
     setEditions(eds);
-    setContent(rows);
-    setLinks(linkMap);
     setSections(meta.sectionNames);
+    setSectionKeys(secs.map((s) => s.key).sort(cmpRef));
+    return true;
   }, []);
 
   useEffect(() => {
-    if (!book) {
-      setContent(null);
-      setEditions([]);
-      setLinks({});
-      setSections([]);
-      setNotLocal(false);
+    setError(null);
+    setEditions([]);
+    setContent([]);
+    setLinks({});
+    setSections([]);
+    setSectionKeys(null);
+    setLoaded(null);
+    setNotLocal(false);
+    actedRef.current = null;
+    scrolledForRef.current = null;
+    if (!book) return;
+    let cancelled = false;
+    loadBookSkeleton(book).catch((e) => !cancelled && setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [book, loadBookSkeleton]);
+
+  // Navigation: load (or jump to) the section for the focused ref. If that section is already in the
+  // loaded window, do nothing (the scroll-to effect handles it); otherwise reset the window to it.
+  useEffect(() => {
+    if (!book || !sectionKeys) return;
+    if (loaded && ref === actedRef.current) return; // scroll-driven URL update (or already handled) → no reload
+    const targetKey = ref ? sectionKeyOf(ref) : sectionKeys[0];
+    let idx = sectionKeys.indexOf(targetKey);
+    if (idx < 0) idx = 0;
+    if (loaded && idx >= loaded.start && idx <= loaded.end) {
+      actedRef.current = ref;
       return;
     }
     let cancelled = false;
     (async () => {
-      setError(null);
-      setContent(null);
-      setEditions([]);
-      setLinks({});
-      setSections([]);
-      setNotLocal(false);
-      try {
-        const rows = await getContent(book); // local check — NO autodownload
-        if (cancelled) return;
-        if (!rows.length) {
-          setNotLocal(true);
-          return;
-        }
-        await loadBookData(book);
-      } catch (e) {
-        if (!cancelled) setError(String(e));
-      }
-    })();
+      const { rows, lnk } = await fetchSection(book, sectionKeys[idx]);
+      if (cancelled) return;
+      scrolledForRef.current = null; // a jump → allow scroll-to for this ref
+      setLoaded({ start: idx, end: idx });
+      setContent(rows);
+      setLinks(lnk);
+      actedRef.current = ref;
+    })().catch((e) => !cancelled && setError(String(e)));
     return () => {
       cancelled = true;
     };
-  }, [book, loadBookData]);
+  }, [book, ref, sectionKeys, loaded, fetchSection]);
+
+  // Grow the window by one section in either direction (infinite scroll).
+  const loadMore = useCallback(
+    async (dir: 'up' | 'down') => {
+      const cur = loadedRef.current;
+      if (!cur || !book || !sectionKeys || loadingRef.current) return;
+      const idx = dir === 'down' ? cur.end + 1 : cur.start - 1;
+      if (idx < 0 || idx >= sectionKeys.length) return;
+      loadingRef.current = true;
+      setLoadingMore(dir);
+      try {
+        const { rows, lnk } = await fetchSection(book, sectionKeys[idx]);
+        if (dir === 'up') {
+          const root = viewerRef.current;
+          prependAdjustRef.current = root ? { h: root.scrollHeight, t: root.scrollTop } : null;
+          setContent((prev) => [...rows, ...prev]);
+          setLinks((prev) => mergeLinks(prev, lnk));
+          setLoaded({ start: idx, end: cur.end });
+        } else {
+          setContent((prev) => [...prev, ...rows]);
+          setLinks((prev) => mergeLinks(prev, lnk));
+          setLoaded({ start: cur.start, end: idx });
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        loadingRef.current = false;
+        setLoadingMore(null);
+      }
+    },
+    [book, sectionKeys, fetchSection]
+  );
+
+  // Infinite scroll: observe sentinels above/below the loaded sections (prefetch within 800px).
+  useEffect(() => {
+    const root = viewerRef.current;
+    const top = topSentinelRef.current;
+    const bot = bottomSentinelRef.current;
+    if (!root || !sectionKeys || (!top && !bot)) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const en of entries) {
+          if (!en.isIntersecting || loadingRef.current) continue;
+          const cur = loadedRef.current;
+          if (!cur) continue;
+          if (en.target === bot && cur.end < sectionKeys.length - 1) loadMore('down');
+          else if (en.target === top && cur.start > 0) loadMore('up');
+        }
+      },
+      { root, rootMargin: '800px 0px' }
+    );
+    if (top) io.observe(top);
+    if (bot) io.observe(bot);
+    return () => io.disconnect();
+  }, [sectionKeys, loaded, loadMore]);
+
+  // Keep the user pinned to the same content when a previous section is prepended above the viewport.
+  useLayoutEffect(() => {
+    const adj = prependAdjustRef.current;
+    if (!adj) return;
+    prependAdjustRef.current = null;
+    const root = viewerRef.current;
+    if (root) root.scrollTop = adj.t + (root.scrollHeight - adj.h);
+  }, [content]);
 
   const download = useCallback(async () => {
     if (!book) return;
     setDownloading('…');
     try {
       await ensureBook(book, (p) => setDownloading(p.total ? `${Math.round((p.received / p.total) * 100)}%` : `${(p.received / 1e6).toFixed(1)} MB`));
-      await loadBookData(book);
-      await refreshLocal();
       setNotLocal(false);
+      await loadBookSkeleton(book);
+      await refreshLocal();
     } catch (e) {
       setError(String(e));
     } finally {
       setDownloading(null);
     }
-  }, [book, loadBookData, refreshLocal]);
+  }, [book, loadBookSkeleton, refreshLocal]);
 
   const shown = useMemo(() => {
     const valid = state.selectedEditionIds.filter((id) => editions.some((e) => e.id === id));
@@ -183,12 +294,14 @@ export default function ViewerPage() {
   }, [state.selectedEditionIds, editions]);
   const setEd = useCallback((ids: string[]) => dispatch({ type: 'setEditions', ids }), [dispatch]);
 
-  // scroll-to + flash the focused ref
+  // scroll-to + flash the focused ref once it's in the DOM (after a navigation/jump load). Guarded so it
+  // doesn't re-fire as the window grows on scroll, or fight a scroll-driven (section-level) ref update.
   useEffect(() => {
-    if (!ref || !content) return;
+    if (!ref || !content.length || scrolledForRef.current === ref) return;
     const raf = requestAnimationFrame(() => {
       const el = document.querySelector<HTMLElement>(`.verse[data-ref="${window.CSS.escape(ref)}"]`);
       if (el) {
+        scrolledForRef.current = ref;
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         el.classList.remove('flash');
         void el.offsetWidth; // force reflow so the animation restarts if we re-navigate to the same verse
@@ -198,6 +311,37 @@ export default function ViewerPage() {
     });
     return () => cancelAnimationFrame(raf);
   }, [ref, content]);
+
+  // As the reader scrolls, track the section at the top of the viewport into the URL ref (in place, no
+  // history spam) so a refresh/share lands here. Marking actedRef first makes the navigation effect skip it.
+  useEffect(() => {
+    const root = viewerRef.current;
+    if (!root || !sectionKeys) return;
+    let t = 0;
+    const onScroll = () => {
+      clearTimeout(t);
+      t = window.setTimeout(() => {
+        const rootTop = root.getBoundingClientRect().top;
+        let visible: string | null = null;
+        for (const s of root.querySelectorAll<HTMLElement>('section.chapter')) {
+          if (s.getBoundingClientRect().bottom > rootTop + 80) {
+            visible = s.querySelector<HTMLElement>('.verse')?.getAttribute('data-ref')?.split(':')[0] ?? null;
+            break;
+          }
+        }
+        const curSec = ref ? sectionKeyOf(ref) : null;
+        if (visible && visible !== curSec) {
+          actedRef.current = visible;
+          dispatch({ type: 'setRef', ref: visible });
+        }
+      }, 150);
+    };
+    root.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      root.removeEventListener('scroll', onScroll);
+      clearTimeout(t);
+    };
+  }, [sectionKeys, ref, dispatch]);
 
   // Mobile: opening a book (incl. via the catalog's react-router <Link>, which bypasses dispatch) closes
   // the catalog drawer so the reader is visible. No-op at desktop widths (navOpen is ignored there).
@@ -225,8 +369,6 @@ export default function ViewerPage() {
     () => ({ reader: readerCtx, editions, content, links, sections, busy: !!downloading, setEditions: setEd }),
     [readerCtx, editions, content, links, sections, downloading, setEd]
   );
-
-  const viewerRef = useRef<HTMLElement>(null);
 
   // Responsive: full flex row on desktop; catalog + right-rail become Drawers on mobile (≥48em = Mantine sm).
   const isDesktop = useMediaQuery('(min-width: 48em)', typeof window !== 'undefined' ? window.innerWidth >= 768 : true);
@@ -266,8 +408,22 @@ export default function ViewerPage() {
                 </Button>
               </Group>
             </Paper>
-          ) : content ? (
-            <EditorHost view={view} />
+          ) : loaded ? (
+            <>
+              <div ref={topSentinelRef} className="scroll-sentinel" aria-hidden />
+              {loadingMore === 'up' && (
+                <p className="muted load-more" data-testid="load-more-up">
+                  <Loader size="xs" /> Loading previous…
+                </p>
+              )}
+              <EditorHost view={view} />
+              {loadingMore === 'down' && (
+                <p className="muted load-more" data-testid="load-more-down">
+                  <Loader size="xs" /> Loading more…
+                </p>
+              )}
+              <div ref={bottomSentinelRef} className="scroll-sentinel" aria-hidden />
+            </>
           ) : (
             <p className="muted" data-testid="status">
               <Loader size="xs" /> Loading…
@@ -738,8 +894,7 @@ function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
   const load = useCallback(async () => {
     if (!refTag) return setSt({ loading: false, local: true, editions: [], segments: [] });
     setSt({ loading: true, local: true, editions: [], segments: [] });
-    const rows0 = await getContent(book);
-    if (!rows0.length) return setSt({ loading: false, local: false, editions: [], segments: [] }); // not downloaded
+    if (!(await hasLocalContent(book))) return setSt({ loading: false, local: false, editions: [], segments: [] }); // not downloaded
     const [eds, rows] = await Promise.all([getEditions(book), getSiblings(book, refTag)]);
     const byRef = new Map<string, Record<string, string>>();
     for (const r of rows) (byRef.get(r.ref) ?? byRef.set(r.ref, {}).get(r.ref)!)[r.edition_id] = r.text;

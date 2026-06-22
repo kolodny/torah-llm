@@ -43,6 +43,7 @@ export type WorkbenchState = {
 export type WorkbenchAction =
   | { type: 'setPage'; id: string } // switch the active top-level page (header nav)
   | { type: 'navigate'; book: string; ref?: string | null } // open a book in the reader (clears peek)
+  | { type: 'setRef'; ref: string | null } // update only the focused ref in place (replace, no history) — used by scroll tracking
   | { type: 'setEditions'; ids: string[] } // set the shown edition columns (order matters)
   | { type: 'peek'; book: string; ref: string | null } // open the inline preview
   | { type: 'clearPeek' }
@@ -120,6 +121,19 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
             return p;
           });
           localDispatch({ type: 'setNav', open: false }); // mobile: picking a book closes the catalog drawer
+          break;
+        case 'setRef':
+          // Track the section currently in view as you scroll: rewrite only `ref`, in place (no new
+          // history entry, no touching book/peek), so a refresh/share lands you where you were reading.
+          setParams(
+            (prev) => {
+              const p = new URLSearchParams(prev);
+              if (action.ref) p.set('ref', action.ref);
+              else p.delete('ref');
+              return p;
+            },
+            { replace: true }
+          );
           break;
         case 'setEditions':
           setParams(

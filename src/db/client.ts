@@ -112,6 +112,76 @@ export async function getEditions(tocId: string): Promise<Edition[]> {
   );
 }
 
+/** Cheap "is this book downloaded?" check — avoids pulling the whole book just to test for presence. */
+export async function hasLocalContent(tocId: string): Promise<boolean> {
+  return withApi(async (api) => {
+    const r = (await api.exec('SELECT EXISTS(SELECT 1 FROM content WHERE toc_id = ?) AS e', [
+      tocId,
+    ])) as unknown as { e: number }[];
+    return !!r[0]?.e;
+  });
+}
+
+// --- section-level (paginated) loading --------------------------------------------------------
+// A book is read one SECTION at a time (a chapter / daf — the ref part before the first ':'), so
+// opening Genesis loads chapter 1, not all ~1,500 verses. The reader infinite-scrolls to fetch the
+// previous/next section on demand. `like` patterns escape SQL wildcards (refs are numeric, but be safe).
+const likeEsc = (s: string) => s.replace(/([\\%_])/g, '\\$1');
+
+/** The (order-able) section ladder for a book: each section key + its verse count. Text-free, so cheap. */
+export async function getBookSections(tocId: string): Promise<{ key: string; count: number }[]> {
+  return withApi(
+    async (api) =>
+      (await api.exec(
+        `SELECT CASE WHEN instr(ref, ':') > 0 THEN substr(ref, 1, instr(ref, ':') - 1) ELSE ref END AS key,
+                COUNT(DISTINCT ref) AS count
+           FROM content WHERE toc_id = ? GROUP BY key`,
+        [tocId]
+      )) as unknown as { key: string; count: number }[]
+  );
+}
+
+/** One section's rows (every edition) — e.g. all of chapter 3. */
+export async function getSectionContent(tocId: string, section: string): Promise<ContentRow[]> {
+  return withApi(
+    async (api) =>
+      (await api.exec(
+        "SELECT edition_id, ref, text FROM content WHERE toc_id = ? AND (ref = ? OR ref LIKE ? ESCAPE '\\') ORDER BY id",
+        [tocId, section, `${likeEsc(section)}:%`]
+      )) as unknown as ContentRow[]
+  );
+}
+
+/** Links touching one section (either endpoint), keyed by the in-book ref — same shape as getLinks. */
+export async function getSectionLinks(tocId: string, section: string): Promise<Record<string, LinkRef[]>> {
+  return withApi(async (api) => {
+    const like = `${likeEsc(section)}:%`;
+    const rows = (await api.exec(
+      `SELECT from_id, from_ref, to_id, to_ref, connection_type FROM links
+         WHERE (from_id = ? AND (from_ref = ? OR from_ref LIKE ? ESCAPE '\\'))
+            OR (to_id   = ? AND (to_ref   = ? OR to_ref   LIKE ? ESCAPE '\\'))`,
+      [tocId, section, like, tocId, section, like]
+    )) as unknown as {
+      from_id: string;
+      from_ref: string;
+      to_id: string;
+      to_ref: string;
+      connection_type: string | null;
+    }[];
+    const map: Record<string, LinkRef[]> = {};
+    for (const r of rows) {
+      const isFrom = r.from_id === tocId;
+      const thisRef = isFrom ? r.from_ref : r.to_ref;
+      (map[thisRef] ??= []).push({
+        otherId: isFrom ? r.to_id : r.from_id,
+        otherRef: isFrom ? r.to_ref : r.from_ref,
+        connectionType: r.connection_type,
+      });
+    }
+    return map;
+  });
+}
+
 /** All content rows (every edition) for a book. */
 export async function getContent(tocId: string): Promise<ContentRow[]> {
   return withApi(

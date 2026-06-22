@@ -152,6 +152,11 @@ body {
 .viewer h2 { margin: 0 0 6px; font-size: 24px; }
 .viewer h2 .he { color: var(--muted); font-weight: 400; }
 
+/* infinite-scroll plumbing: invisible sentinels bracket the loaded sections; a small in-flow notice
+   shows while the prev/next section is being fetched from the local DB. */
+.scroll-sentinel { height: 1px; }
+.load-more { display: flex; align-items: center; gap: 8px; padding: 12px 0; }
+
 .muted { color: var(--muted); font-size: 14px; }
 
 .chapter { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 18px; }
