@@ -36,13 +36,53 @@ const manifestUrl = `${dbBase}manifest.json`;
 
 type Manifest = { schemaVersion: number; publishId: string; books?: number };
 
-const init = (async () => {
-  const sqlite3 = await sqlite3InitModule(); // print/printErr default to console.log/error
-  const pool = await sqlite3.installOpfsSAHPoolVfs({ name: 'torah-llm' });
-  // Need room for: /db.sqlite + a slice (merge) + /catalog-tmp + SQLite journals.
-  await pool.reserveMinimumCapacity(8);
-  return { sqlite3, pool };
-})();
+// A too-fast reload (or a second tab grabbing the pool) can leave the previous worker's OPFS
+// SyncAccessHandles briefly open, so installing the SAH-pool VFS throws NoModificationAllowedError. Retry
+// with backoff until the stale handles are released, instead of poisoning the worker on a quick refresh.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function installPoolWithRetry(sqlite3: any) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await sqlite3.installOpfsSAHPoolVfs({ name: 'torah-llm' });
+    } catch (e) {
+      const handleRace = /NoModificationAllowed|Access Handle|already (open|in use)/i.test(String((e as { message?: string })?.message ?? e));
+      if (!handleRace || attempt >= 15) throw e;
+      await new Promise((r) => setTimeout(r, Math.min(1000, 150 + attempt * 100)));
+    }
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const init: Promise<{ sqlite3: any; pool: any }> = new Promise((resolve, reject) => {
+  const setup = async () => {
+    const sqlite3 = await sqlite3InitModule(); // print/printErr default to console.log/error
+    const pool = await installPoolWithRetry(sqlite3);
+    // Need room for: /db.sqlite + a slice (merge) + /catalog-tmp + SQLite journals.
+    await pool.reserveMinimumCapacity(8);
+    return { sqlite3, pool };
+  };
+  // Serialize SAH-pool ownership across worker generations with a Web Lock. On a fast reload the new
+  // worker waits here until the previous worker is fully torn down (the lock auto-releases on worker
+  // termination, by which point its OPFS access handles are freed), closing the NoModificationAllowedError
+  // race on those handles. installPoolWithRetry remains as a backstop for any residual timing gap.
+  if (navigator.locks?.request) {
+    navigator.locks
+      .request('torah-sahpool', { mode: 'exclusive' }, async () => {
+        let held;
+        try {
+          held = await setup();
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        resolve(held);
+        await new Promise(() => {}); // hold the lock until this worker is terminated
+      })
+      .catch(reject);
+  } else {
+    setup().then(resolve, reject);
+  }
+});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let db: any;
@@ -423,23 +463,15 @@ const api = {
   async ensureBook(tocId: string, onProgress?: (p: Progress) => void) {
     const { pool } = await init;
     await boot();
-    const attempt = async () => {
-      const want = scalar(`SELECT content_version FROM toc WHERE id = ?`, [tocId]);
-      const have = scalar(`SELECT content_version FROM book_state WHERE toc_id = ?`, [tocId]);
-      if (have != null && (want == null || have === want)) return; // present and current
-      if (want == null && Number(scalar(`SELECT COUNT(*) FROM content WHERE toc_id = ?`, [tocId])) > 0)
-        return; // no version info (offline/old catalog) but content is present → use it
-      const file = sliceUrlPath(tocId);
-      await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
-    };
-    try {
-      await attempt();
-    } catch (e) {
-      if (!isCorrupt(e)) throw e;
-      console.warn('[db] book merge hit a corrupt cache — wiping, re-initializing, and retrying once', e);
-      await wipeAndReboot();
-      await attempt();
-    }
+    const want = scalar(`SELECT content_version FROM toc WHERE id = ?`, [tocId]);
+    const have = scalar(`SELECT content_version FROM book_state WHERE toc_id = ?`, [tocId]);
+    if (have != null && (want == null || have === want)) return; // present and current
+    if (want == null && Number(scalar(`SELECT COUNT(*) FROM content WHERE toc_id = ?`, [tocId])) > 0)
+      return; // no version info (offline/old catalog) but content is present → use it
+    const file = sliceUrlPath(tocId);
+    // Don't wrap this in corruption-recovery: a transiently bad slice would otherwise wipe ALL downloaded
+    // books. A genuinely corrupt main cache surfaces on the next boot/query, which self-heal (see exec/doBoot).
+    await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
   },
 
   /** Remove one book's downloaded content (the catalog row stays). It can be re-downloaded later. */
