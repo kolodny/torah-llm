@@ -281,39 +281,31 @@ export default function ViewerPage() {
 
   const aside = <ViewerSidebar peek={state.peek} reader={readerCtx} />;
 
-  if (isDesktop) {
-    return (
-      <div className="viewer-page">
-        <nav className="catalog" aria-label="Catalog">{catalogInner}</nav>
-        {reader}
-        {hasSidebar && aside}
-      </div>
-    );
-  }
-
-  // Mobile: reader is full-width; the catalog and the right-rail slide in as drawers.
+  // One tree for both layouts, with the (heavy) reader kept at a stable position so it is NOT remounted
+  // when the viewport crosses the breakpoint — only the catalog / right-rail swap between inline panes and
+  // drawers. (Two separate returns used to remount all ~1500 verses on every resize across the breakpoint.)
   return (
-    <div className="viewer-page mobile">
+    <div className={`viewer-page${isDesktop ? '' : ' mobile'}`}>
+      {isDesktop ? (
+        <nav className="catalog" aria-label="Catalog">{catalogInner}</nav>
+      ) : (
+        <Drawer opened={state.navOpen} onClose={() => dispatch({ type: 'setNav', open: false })} position="left" size="85%" title="Catalog" padding="sm" zIndex={350}>
+          {catalogInner}
+        </Drawer>
+      )}
       {reader}
-      {hasSidebar && (
-        <ActionIcon
-          className="aside-fab"
-          variant="filled"
-          color="orange"
-          radius="xl"
-          size="xl"
-          onClick={() => dispatch({ type: 'toggleAside' })}
-          aria-label="Open panels"
-        >
+      {isDesktop ? (
+        hasSidebar ? aside : null
+      ) : (
+        <Drawer opened={state.asideOpen && hasSidebar} onClose={() => dispatch({ type: 'setAside', open: false })} position="right" size="92%" title="Panels" padding={0} zIndex={350} classNames={{ body: 'aside-drawer-body' }}>
+          {aside}
+        </Drawer>
+      )}
+      {!isDesktop && hasSidebar && (
+        <ActionIcon className="aside-fab" variant="filled" color="orange" radius="xl" size="xl" onClick={() => dispatch({ type: 'toggleAside' })} aria-label="Open panels">
           ☰
         </ActionIcon>
       )}
-      <Drawer opened={state.navOpen} onClose={() => dispatch({ type: 'setNav', open: false })} position="left" size="85%" title="Catalog" padding="sm" zIndex={350}>
-        {catalogInner}
-      </Drawer>
-      <Drawer opened={state.asideOpen && hasSidebar} onClose={() => dispatch({ type: 'setAside', open: false })} position="right" size="92%" title="Panels" padding={0} zIndex={350} classNames={{ body: 'aside-drawer-body' }}>
-        {aside}
-      </Drawer>
     </div>
   );
 }

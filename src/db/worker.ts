@@ -104,7 +104,43 @@ function boot(): Promise<void> {
   return bootP;
 }
 
+// A malformed/corrupt cache (e.g. a page reload mid-merge before this VFS was made crash-safe) is
+// unrecoverable in place; the only fix is to wipe it and re-stream a fresh catalog (books re-download).
+const isCorrupt = (e: unknown) => /SQLITE_CORRUPT|malformed|not a database|disk image/i.test(String((e as { message?: string })?.message ?? e));
+
+// Drop the local store and re-boot fresh. Used to self-heal a corrupt cache instead of bricking the app.
+async function wipeAndReboot() {
+  const { pool } = await init;
+  try {
+    db?.close();
+  } catch {
+    /* already closed / unusable */
+  }
+  db = undefined;
+  bootP = null;
+  await pool.wipeFiles();
+  await boot();
+}
+
 async function doBoot() {
+  try {
+    await openAndReconcile();
+  } catch (e) {
+    if (!isCorrupt(e)) throw e;
+    console.warn('[db] content cache is corrupt — wiping and re-initializing fresh', e);
+    const { pool } = await init;
+    try {
+      db?.close();
+    } catch {
+      /* unusable */
+    }
+    db = undefined;
+    await pool.wipeFiles();
+    await openAndReconcile(); // fresh download of the boot catalog; books re-merge on demand
+  }
+}
+
+async function openAndReconcile() {
   const { pool, sqlite3 } = await init;
 
   // 1. Content cache: open it and bring the schema current by migrating IN PLACE (never re-download).
@@ -118,6 +154,12 @@ async function doBoot() {
     db = new pool.OpfsSAHPoolDb(BOOT_PATH);
     migrateContent();
   }
+  // Crash-safety: on the OPFS SAH-pool VFS a page reload mid-write can corrupt the file unless the rollback
+  // journal is synced before the DB pages are modified. NORMAL guarantees that ordering (enough to survive
+  // an app crash like a reload) without the default FULL's extra fsyncs — so an interrupted book merge rolls
+  // back cleanly on reopen instead of leaving a malformed image.
+  db.exec('PRAGMA journal_mode = TRUNCATE');
+  db.exec('PRAGMA synchronous = NORMAL');
   db.exec(LOCAL_TABLES_SQL); // local-only bookkeeping (not shipped in slices)
   registerFunctions(); // evalJS() etc. — re-registered each open (functions are per-connection)
   // Safety net: cancel a user query that runs past EXEC_TIMEOUT_MS so a pathological query (e.g. a cartesian
@@ -337,19 +379,29 @@ const api = {
   /** Run SQL; returns rows as objects (empty for non-SELECT). */
   async exec(sql: string, params: unknown[] = []) {
     await boot();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const resultRows: any[] = [];
-    queryDeadline = Date.now() + EXEC_TIMEOUT_MS;
+    const run = () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resultRows: any[] = [];
+      queryDeadline = Date.now() + EXEC_TIMEOUT_MS;
+      try {
+        db.exec({ sql, bind: params.length ? params : undefined, rowMode: 'object', resultRows });
+      } catch (e) {
+        if (/interrupt/i.test(String((e as { message?: string })?.message ?? e)))
+          throw new Error(`Query cancelled after ${EXEC_TIMEOUT_MS / 1000}s. Add a LIMIT, or MATERIALIZE a CTE you join to itself.`);
+        throw e;
+      } finally {
+        queryDeadline = 0;
+      }
+      return resultRows;
+    };
     try {
-      db.exec({ sql, bind: params.length ? params : undefined, rowMode: 'object', resultRows });
+      return run();
     } catch (e) {
-      if (/interrupt/i.test(String((e as { message?: string })?.message ?? e)))
-        throw new Error(`Query cancelled after ${EXEC_TIMEOUT_MS / 1000}s. Add a LIMIT, or MATERIALIZE a CTE you join to itself.`);
-      throw e;
-    } finally {
-      queryDeadline = 0;
+      if (!isCorrupt(e)) throw e;
+      console.warn('[db] query hit a corrupt cache — wiping, re-initializing, and retrying once', e);
+      await wipeAndReboot();
+      return run();
     }
-    return resultRows;
   },
 
   /** Register plugin-supplied SQL functions (names already namespaced by the host). Bodies are pure JS. */
@@ -371,13 +423,23 @@ const api = {
   async ensureBook(tocId: string, onProgress?: (p: Progress) => void) {
     const { pool } = await init;
     await boot();
-    const want = scalar(`SELECT content_version FROM toc WHERE id = ?`, [tocId]);
-    const have = scalar(`SELECT content_version FROM book_state WHERE toc_id = ?`, [tocId]);
-    if (have != null && (want == null || have === want)) return; // present and current
-    if (want == null && Number(scalar(`SELECT COUNT(*) FROM content WHERE toc_id = ?`, [tocId])) > 0)
-      return; // no version info (offline/old catalog) but content is present → use it
-    const file = sliceUrlPath(tocId);
-    await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
+    const attempt = async () => {
+      const want = scalar(`SELECT content_version FROM toc WHERE id = ?`, [tocId]);
+      const have = scalar(`SELECT content_version FROM book_state WHERE toc_id = ?`, [tocId]);
+      if (have != null && (want == null || have === want)) return; // present and current
+      if (want == null && Number(scalar(`SELECT COUNT(*) FROM content WHERE toc_id = ?`, [tocId])) > 0)
+        return; // no version info (offline/old catalog) but content is present → use it
+      const file = sliceUrlPath(tocId);
+      await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
+    };
+    try {
+      await attempt();
+    } catch (e) {
+      if (!isCorrupt(e)) throw e;
+      console.warn('[db] book merge hit a corrupt cache — wiping, re-initializing, and retrying once', e);
+      await wipeAndReboot();
+      await attempt();
+    }
   },
 
   /** Remove one book's downloaded content (the catalog row stays). It can be re-downloaded later. */
