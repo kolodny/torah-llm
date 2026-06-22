@@ -61,27 +61,53 @@ const init: Promise<{ sqlite3: any; pool: any }> = new Promise((resolve, reject)
     await pool.reserveMinimumCapacity(8);
     return { sqlite3, pool };
   };
-  // Serialize SAH-pool ownership across worker generations with a Web Lock. On a fast reload the new
-  // worker waits here until the previous worker is fully torn down (the lock auto-releases on worker
-  // termination, by which point its OPFS access handles are freed), closing the NoModificationAllowedError
-  // race on those handles. installPoolWithRetry remains as a backstop for any residual timing gap.
-  if (navigator.locks?.request) {
-    navigator.locks
-      .request('torah-sahpool', { mode: 'exclusive' }, async () => {
-        let held;
-        try {
-          held = await setup();
-        } catch (e) {
-          reject(e);
-          return;
-        }
-        resolve(held);
-        await new Promise(() => {}); // hold the lock until this worker is terminated
-      })
-      .catch(reject);
-  } else {
-    setup().then(resolve, reject);
+
+  let settled = false;
+  const ok = (h: { sqlite3: unknown; pool: unknown }) => {
+    if (!settled) (settled = true), resolve(h);
+  };
+  const fail = (e: unknown) => {
+    if (!settled) (settled = true), reject(e);
+  };
+
+  if (!navigator.locks?.request) {
+    setup().then(ok, fail);
+    return;
   }
+
+  // Best-effort serialization of SAH-pool ownership across worker generations: on a fast reload the new
+  // worker waits on 'torah-sahpool' until the previous worker is torn down (the lock auto-releases on
+  // termination, by which point its OPFS handles are freed), so installing the VFS sees clean handles —
+  // a 0-error handoff. installPoolWithRetry handles any residual timing gap.
+  //
+  // CRITICAL: the lock must NEVER be able to hang init. On mobile a PWA is *frozen* (Page Lifecycle),
+  // not terminated, so a backgrounded/zombie prior worker can keep holding this lock indefinitely. Since
+  // every DB call awaits `init`, an unbounded wait here would silently lock up the whole app. So a
+  // watchdog abandons the lock after a short wait and installs without it (retry still resolves the
+  // handle handoff — it may just log a couple of retries). At most one live worker exists (the leader's),
+  // so proceeding past a stuck holder is safe.
+  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  navigator.locks
+    .request('torah-sahpool', { mode: 'exclusive', signal: ac?.signal }, async () => {
+      let held;
+      try {
+        held = await setup();
+      } catch (e) {
+        fail(e);
+        return;
+      }
+      ok(held);
+      await new Promise(() => {}); // hold the lock for this worker's lifetime
+    })
+    .catch(() => {
+      // Request aborted by the watchdog (or rejected) — the fallback install below covers it.
+    });
+
+  setTimeout(() => {
+    if (settled) return;
+    ac?.abort(); // stop waiting on a lock a frozen prior worker may be holding
+    setup().then(ok, fail);
+  }, 4000);
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
