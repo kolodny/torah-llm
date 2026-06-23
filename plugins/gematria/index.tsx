@@ -232,17 +232,6 @@ ORDER BY v.val DESC
 LIMIT 50;`,
     });
     code.registerSample({
-      id: 'gematria:prime',
-      label: 'Verses whose gematria is prime (Genesis 1)',
-      sql: `-- gematria() + evalJS() for a primality test (value = the gematria number passed in).
-SELECT c.toc_id, c.ref, gematria(c.text) AS gematria, substr(strip(c.text), 1, 40) AS preview
-FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he' AND c.ref LIKE '1:%'
-  AND evalJS('(n => { if (n < 2) return false; for (let i = 2; i*i <= n; i++) if (n % i === 0) return false; return true; })(value)', gematria(c.text))
-ORDER BY gematria DESC
-LIMIT 25;`,
-    });
-    code.registerSample({
       id: 'gematria:verse-equals-word',
       label: 'Any verse whose gematria equals a single word',
       sql: `-- Every verse whose ENTIRE gematria equals that of some single Hebrew word (an example is shown, drawn

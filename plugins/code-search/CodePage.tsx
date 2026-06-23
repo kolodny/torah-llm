@@ -65,56 +65,30 @@ LIMIT 25;`,
   },
   {
     label: 'Verses with two or more pazer cantillations',
-    sql: `-- PAZER() returns the pazer mark; count it via length/replace. (Every Hebrew name works: ALEPH(), QAMATS(), …)
+    sql: `-- Pazer is a rare disjunctive accent. PAZER() returns its mark; count occurrences the SQLite way, with
+-- length(text) - length(replace(text, mark, '')). (Every Hebrew name is a function: ALEPH(), QAMATS(), …)
 SELECT c.toc_id, c.ref,
        length(c.text) - length(replace(c.text, PAZER(), '')) AS pazer_count,
        substr(strip(c.text), 1, 50) AS preview
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he'
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   AND length(c.text) - length(replace(c.text, PAZER(), '')) >= 2
 ORDER BY pazer_count DESC
 LIMIT 25;`,
   },
   {
     label: 'A word with two cantillation marks (Torah)',
-    sql: `-- The famous "double-cantillation" words: the Ten Commandments' dual ta'am elyon/taḥton (Exodus 20,
--- Deuteronomy 5) and the Reuben pisḳa (Genesis 35:22) — a single word carrying two accent systems at once.
--- Pure SQL, no evalJS: split each Hebrew verse into words, explode each word into characters, and keep the
--- words with >= 2 DISTINCT *disjunctive* te'amim — the disjunctive accents named in the IN(...) below (the
--- conjunctive "servants" munaḥ…yeraḥ-ben-yomo are omitted); zinor is folded into zarqa since they're one accent.
-WITH RECURSIVE
-  src AS (
-    SELECT c.toc_id, c.ref,
-           ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
-    FROM content c JOIN editions e ON e.id = c.edition_id
-    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  ),
-  words(toc_id, ref, word, rest) AS (        -- split each verse on space / maqaf / paseq
-    SELECT toc_id, ref, '', t FROM src
-    UNION ALL
-    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1)
-    FROM words WHERE rest <> ''
-  ),
-  chars(toc_id, ref, word, i, ch) AS (       -- explode each word into its characters
-    SELECT toc_id, ref, word, 1, substr(word, 1, 1) FROM words WHERE word <> ''
-    UNION ALL
-    SELECT toc_id, ref, word, i + 1, substr(word, i + 1, 1) FROM chars WHERE i < length(word)
-  ),
-  hits AS (                                  -- words carrying two distinct disjunctive accents
-    SELECT toc_id, ref, word FROM chars
-    GROUP BY toc_id, ref, word
-    HAVING COUNT(DISTINCT CASE
-             WHEN ch IN (ETNAHTA(), SEGOLTA(), SHALSHELET(), ZAQEF_QATAN(), ZAQEF_GADOL(), TIPEHA(),
-                         REVIA(), ZARQA(), PASHTA(), YETIV(), TEVIR(), GERESH(), GERESH_MUQDAM(),
-                         GERSHAYIM(), QARNEY_PARA(), TELISHA_GEDOLA(), PAZER(), ATNAH_HAFUKH(),
-                         OLE(), ILUY(), DEHI(), ZINOR())
-             THEN CASE WHEN ch = ZINOR() THEN ZARQA() ELSE ch END   -- count zinor as zarqa
-           END) >= 2
-  )
-SELECT toc_id, ref, min(word) AS word FROM hits   -- one row per verse (the qualifying set is small)
-GROUP BY toc_id, ref
-ORDER BY toc_id, ref
-LIMIT 50;`,
+    sql: `-- The famous "double-cantillation" words: a single letter carrying two ta'am (accent) marks at once.
+-- All ta'amim live in one Unicode block (U+0591–U+05AE), so the whole test is "two of them in a row".
+-- This surfaces the Ten Commandments' dual ta'am elyon/taḥton (Exodus 20, Deuteronomy 5) plus the two
+-- narrative oddities — the Reuben pisḳa (Genesis 35:22) and Noaḥ's naming (Genesis 5:29). SQLite has no
+-- regex, so evalJS lends us JS's; we also pull out the marked word for display.
+SELECT c.toc_id, c.ref,
+       evalJS('value.split(/\\s+/).find(w => /[\\u0591-\\u05AE]{2}/.test(w))', strip(c.text)) AS word
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  AND evalJS('/[\\u0591-\\u05AE]{2}/.test(value)', c.text)
+ORDER BY c.toc_id, c.ref;`,
   },
   {
     label: 'The most-referenced verses (cross-reference graph)',
