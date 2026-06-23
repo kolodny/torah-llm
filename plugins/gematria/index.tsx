@@ -18,7 +18,13 @@ const VALUE: Record<string, number> = {
 };
 const gematria = (s: string) => [...s.replace(/[^א-ת]/g, '')].reduce((n, c) => n + (VALUE[c] ?? 0), 0);
 const RTL = /^(he|arc|yi)/;
-const strip = (html: string) => html.replace(/<[^>]+>/g, '');
+// Strip HTML tags AND decode entities (&thinsp;/&nbsp;/… → real whitespace) via the DOM, so previews show
+// clean text (not literal "&thinsp;") and word-mode tokenization splits on entity-spacing too. Main-thread only.
+const strip = (html: string) => {
+  const el = document.createElement('div');
+  el.innerHTML = html ?? '';
+  return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+};
 // The same gematria math as a pure body string, so the Code page's SQL gematria(text) matches this tooltip's.
 const GEMATRIA_BODY = `var GV=${JSON.stringify(VALUE)}; var t=String(text), n=0; for (var i=0;i<t.length;i++) n+=GV[t[i]]||0; return n;`;
 let highlightValue: number | null = null;
@@ -235,6 +241,37 @@ WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he' AND c.ref 
   AND evalJS('(n => { if (n < 2) return false; for (let i = 2; i*i <= n; i++) if (n % i === 0) return false; return true; })(value)', gematria(c.text))
 ORDER BY gematria DESC
 LIMIT 25;`,
+    });
+    code.registerSample({
+      id: 'gematria:verse-equals-word',
+      label: 'A whole verse equal to a word — 376 (שלום / עשו)',
+      sql: `-- 376 = שָׁלוֹם (peace) = עֵשָׂו (Esau). The ONLY verse in the Torah whose ENTIRE gematria is 376 is the
+-- climax of the Song of the Sea: Exodus 15:18 — יְהֹוָה יִמְלֹךְ לְעֹלָם וָעֶד. (gematria() ignores nikud/te'amim + HTML.)
+-- Download the Torah books in Storage first; change 376 to 26 (יהוה), 611 (תורה), 358 (משיח)…
+SELECT c.toc_id, c.ref, gematria(c.text) AS gematria, substr(strip(c.text), 1, 60) AS verse
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy')
+  AND e.source = 'sefaria' AND e.lang = 'he' AND gematria(c.text) = 376
+GROUP BY c.toc_id, c.ref
+ORDER BY c.toc_id, c.ref;`,
+    });
+    code.registerSample({
+      id: 'gematria:words-equal',
+      label: 'Torah words sharing a famous gematria (376 = שלום = עשו)',
+      sql: `-- Every Torah word whose letters sum to 376 — שָׁלוֹם, עֵשָׂו, and others (e.g. וַיַּשְׁכֵּם "and he rose early").
+-- Split each verse into words, then keep those with gematria 376. Change 376 to 26 (יהוה), 13 (אהבה / אחד)…
+WITH RECURSIVE
+  src AS (
+    SELECT c.toc_id, c.ref, ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
+    FROM content c JOIN editions e ON e.id = c.edition_id
+    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  ),
+  words(toc_id, ref, word, rest) AS (
+    SELECT toc_id, ref, '', t FROM src
+    UNION ALL
+    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM words WHERE rest <> ''
+  )
+SELECT DISTINCT toc_id, ref, word FROM words WHERE word <> '' AND gematria(word) = 376 LIMIT 50;`,
     });
   },
 });

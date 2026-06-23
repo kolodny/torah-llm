@@ -117,6 +117,40 @@ ORDER BY toc_id, ref
 LIMIT 50;`,
   },
   {
+    label: 'Verses with a doubled word (צדק צדק, אברהם אברהם)',
+    sql: `-- Consecutive identical words — a phenomenon the commentators dwell on: אַבְרָהָם אַבְרָהָם (Gen 22:11) and
+-- מֹשֶׁה מֹשֶׁה (Exod 3:4) at moments of calling; צֶדֶק צֶדֶק תִּרְדֹּף "justice, justice shall you pursue" (Deut 16:20);
+-- the Thirteen Attributes יְהֹוָה ׀ יְהֹוָה (Exod 34:6). Split each verse into words, reduce each to its CONSONANT
+-- skeleton (so differing cantillation / a separating paseq don't matter), then keep verses where one word's
+-- skeleton equals the next word's.
+WITH RECURSIVE
+  src AS (
+    SELECT c.toc_id, c.ref, ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
+    FROM content c JOIN editions e ON e.id = c.edition_id
+    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  ),
+  w(toc_id, ref, k, word, rest) AS (
+    SELECT toc_id, ref, 0, '', t FROM src
+    UNION ALL
+    SELECT toc_id, ref, k + 1, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM w WHERE rest <> ''
+  ),
+  toks(toc_id, ref, n, word) AS (              -- number the non-empty words 1,2,3,… per verse (skips paseq gaps)
+    SELECT toc_id, ref, ROW_NUMBER() OVER (PARTITION BY toc_id, ref ORDER BY k), word FROM w WHERE word <> ''
+  ),
+  ltr(toc_id, ref, n, word, i, skel) AS (      -- accumulate each word's letters only (drop nikud + te'amim)
+    SELECT toc_id, ref, n, word, 0, '' FROM toks
+    UNION ALL
+    SELECT toc_id, ref, n, word, i + 1,
+           skel || CASE WHEN unicode(substr(word, i + 1, 1)) BETWEEN 0x05D0 AND 0x05EA THEN substr(word, i + 1, 1) ELSE '' END
+    FROM ltr WHERE i < length(word)
+  ),
+  sk(toc_id, ref, n, s) AS (SELECT toc_id, ref, n, max(skel) FROM ltr GROUP BY toc_id, ref, n)
+SELECT a.toc_id, a.ref, a.s AS doubled_word
+FROM sk a JOIN sk b ON a.toc_id = b.toc_id AND a.ref = b.ref AND b.n = a.n + 1 AND a.s = b.s AND length(a.s) >= 2
+ORDER BY a.toc_id, a.ref
+LIMIT 50;`,
+  },
+  {
     label: 'Largest downloaded books (by verse count)',
     sql: `-- Which downloaded books have the most segments?
 SELECT toc_id, COUNT(DISTINCT ref) AS verses
