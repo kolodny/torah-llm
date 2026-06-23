@@ -481,6 +481,8 @@ mark.gematria-hit { background: #ffe08a; border-radius: 3px; padding: 0 1px; box
 /* mobile (<48em): the catalog + right-rail move into Drawers; the reader is full-width */
 .viewer-page.mobile { display: block; height: calc(100vh - 56px); }
 .viewer-page.mobile > .viewer { height: 100%; padding: 14px 16px 88px; }
+/* mobile, no book yet: the catalog renders inline (full-width, scrollable) instead of the empty reader */
+.viewer-page.mobile > .catalog { height: 100%; overflow: auto; padding: 12px 16px; background: var(--panel); border: 0; }
 .aside-fab { position: fixed; right: 16px; bottom: 16px; z-index: 360; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }
 /* the right-rail fills its drawer (no fixed flex-basis / border when drawer-hosted) */
 .aside-drawer-body { padding: 0 !important; }

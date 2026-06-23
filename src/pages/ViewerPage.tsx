@@ -449,7 +449,14 @@ export default function ViewerPage() {
           {catalogInner}
         </Drawer>
       )}
-      {reader}
+      {/* Mobile, no book yet: show the catalog inline so a new user lands on something to pick, not an
+          empty reader (the catalog is otherwise hidden behind the header Burger). Once a book is open the
+          reader takes over and the catalog returns to the drawer. */}
+      {!isDesktop && !book ? (
+        <nav className="catalog" aria-label="Catalog">{catalogInner}</nav>
+      ) : (
+        reader
+      )}
       {isDesktop ? (
         hasSidebar ? aside : null
       ) : (
