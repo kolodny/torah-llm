@@ -38,18 +38,28 @@ function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {
     ctx.data.getToc().then(setToc).catch(() => {});
     // only downloaded books have content to search — flag them in the tree.
     ctx.data.query('SELECT DISTINCT toc_id AS id FROM content').then((r) => setLocalBooks(new Set(r.map((x) => x.id as string)))).catch(() => {});
+    // Clear any lingering global highlight when the page unmounts, so reopening it doesn't
+    // leave a stale highlight that the (now gone) "Clear highlight" button can't remove.
+    return () => {
+      highlightValue = null;
+      ctx.actions.emit('decorations.changed');
+    };
   }, [ctx]);
 
   const run = async (e?: FormEvent) => {
     e?.preventDefault();
     const n = parseInt(value, 10);
     const books = [...selected];
-    if (!books.length || !Number.isFinite(n)) return;
+    // A search value of 0 matches every non-Hebrew (zero-value) token — treat it as "no search".
+    if (!books.length || !Number.isFinite(n) || n <= 0) return;
     setBusy(true);
     const ph = books.map(() => '?').join(',');
+    // Pick one Hebrew edition per verse (MIN edition_id) so a verse with several Hebrew editions
+    // isn't returned/counted once per edition.
     const rows = (await ctx.data.query(
-      `SELECT c.toc_id AS book, c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id
-        WHERE c.toc_id IN (${ph}) AND e.lang IN ('he', 'arc') ORDER BY c.toc_id, c.id`,
+      `SELECT c.toc_id AS book, c.ref AS ref, MIN(c.text) AS text FROM content c JOIN editions e ON e.id = c.edition_id
+        WHERE c.toc_id IN (${ph}) AND e.lang IN ('he', 'arc')
+        GROUP BY c.toc_id, c.ref ORDER BY c.toc_id, MIN(c.id)`,
       books
     )) as { book: string; ref: string; text: string }[];
     const out: { book: string; ref: string; text: string }[] = [];

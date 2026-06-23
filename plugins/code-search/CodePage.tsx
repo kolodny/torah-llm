@@ -12,8 +12,8 @@ import type { PluginContext } from '../../src/plugins/types';
 import { useSlot } from '../../src/plugins/host';
 import { CODE_PAGE_ID, type CellRenderer, type CodeSample } from './api';
 import { HEBREW_CHAR_NAMES } from '../../shared/hebrew-chars';
-import { decodeLink } from '../../shared/code-link';
-import { decodeRender } from '../../shared/code-render';
+import { decodeLink, LINK_TAG } from '../../shared/code-link';
+import { decodeRender, RENDER_TAG } from '../../shared/code-render';
 import { stripHtml } from '../../shared/strip';
 
 const monaco = monacoEsm as typeof MonacoNs;
@@ -140,15 +140,23 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
     const rnd = decodeRender(v); // a cell built by the render() SQL function → a plugin cellRenderer
     if (rnd) {
       const r = renderers.get(rnd.type);
-      return r ? r.render(rnd.args) : <Text size="xs" c="dimmed">[no renderer for "{rnd.type}"]</Text>;
+      if (!r) return <Text size="xs" c="dimmed">[no renderer for "{rnd.type}"]</Text>;
+      // A throwing renderer must blank only this cell, not the whole table.
+      try {
+        return r.render(rnd.args);
+      } catch (e) {
+        return <Text size="xs" c="red">[renderer "{rnd.type}" error: {String(e)}]</Text>;
+      }
     }
     const explicit = decodeLink(v); // a cell built by the link() SQL function
     if (explicit) return linkTo(explicit.book, explicit.ref, explicit.label || explicit.ref || explicit.book);
     // Auto-link from the row's own columns — no function, no lookup: a `ref` cell links to its verse (book
-    // read from toc_id/book in the SAME row); a `toc_id`/`book` cell opens that book.
+    // read from toc_id/book in the SAME row); a `toc_id`/`book` cell opens that book. Skip values that are
+    // really encoded link/render markers — those aren't plain book ids and would make a broken link.
+    const plainStr = (x: unknown): x is string => typeof x === 'string' && !x.startsWith(LINK_TAG) && !x.startsWith(RENDER_TAG);
     const book = row.toc_id ?? row.book;
-    if (col === 'ref' && book != null && v != null) return linkTo(String(book), String(v), text(v));
-    if ((col === 'toc_id' || col === 'book') && v != null) return linkTo(String(v), null, text(v));
+    if (col === 'ref' && plainStr(book) && plainStr(v)) return linkTo(book, v, text(v));
+    if ((col === 'toc_id' || col === 'book') && plainStr(v)) return linkTo(v, null, text(v));
     return <span dir="auto">{text(v)}</span>;
   };
 

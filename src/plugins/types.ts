@@ -31,6 +31,8 @@ export type PluginData = {
   getSiblings(tocId: string, ref: string): Promise<ContentRow[]>;
   getLinks(tocId: string): Promise<Record<string, LinkRef[]>>;
   ensureBook(tocId: string): Promise<void>;
+  /** Cheap check: is this book's content already downloaded locally? (gate downloads on it). */
+  hasLocalContent(tocId: string): Promise<boolean>;
   /** Arbitrary read-only (SELECT) SQL against the local DB. The custom evalJS() function is available. */
   query(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]>;
   /** Table → column names (for schema-aware autocomplete). */
@@ -85,12 +87,16 @@ export type BookView = {
   content: ContentRow[] | null;
   links: Record<string, LinkRef[]>;
   sections: string[];
+  /** Whole-book totals (independent of the loaded window) for display, when known. */
+  bookTotals?: { sections: number; verses: number } | null;
   busy: boolean;
   setEditions(ids: string[]): void;
 };
 export type EditorProps = { view: BookView };
-/** A main-view reader mode (viewer:editor). Highest canRender() is the default; the user can switch. */
-export type EditorDef = Contribution & { title: string; icon?: ReactNode; canRender(reader: ReaderContext): number; render(props: EditorProps): ReactNode };
+/** A main-view reader mode (viewer:editor). Highest canRender() is the default; the user can switch.
+ *  `managesOwnScroll`: the editor renders a fixed slice (not the whole windowed content), so the host
+ *  must NOT drive its infinite-scroll sentinels for it (else a short editor cascades loads). */
+export type EditorDef = Contribution & { title: string; icon?: ReactNode; managesOwnScroll?: boolean; canRender(reader: ReaderContext): number; render(props: EditorProps): ReactNode };
 
 /** A right-rail panel on the viewer (viewer:sidebar). Its render is a React component (use hooks freely). */
 export type SidebarPanel = Contribution & { title: string; icon?: ReactNode; render(): ReactNode };

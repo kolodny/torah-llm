@@ -5,6 +5,7 @@ import { definePlugin, type PluginContext, type ReaderContext } from '../../src/
 
 const strip = (html: string) => html.replace(/<[^>]+>/g, '');
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => '\\' + c);
 const escapeHtml = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!));
 function snippet(html: string, q: string) {
   const text = strip(html);
@@ -29,13 +30,25 @@ function SearchPanel({ ctx }: { ctx: PluginContext }) {
   const [rows, setRows] = useState<{ ref: string; text: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [ran, setRan] = useState(false);
+  const [notDownloaded, setNotDownloaded] = useState(false);
 
   const run = async (e: FormEvent) => {
     e.preventDefault();
     const term = q.trim();
     if (!reader.book || !term) return;
     setBusy(true);
-    const res = (await ctx.data.query('SELECT DISTINCT ref, text FROM content WHERE toc_id = ? AND text LIKE ? ORDER BY id LIMIT 300', [reader.book, `%${term}%`])) as { ref: string; text: string }[];
+    if (!(await ctx.data.hasLocalContent(reader.book))) {
+      setRows([]);
+      setNotDownloaded(true);
+      setBusy(false);
+      setRan(true);
+      return;
+    }
+    setNotDownloaded(false);
+    // Match against stripped (visible) text, dedupe by ref (a verse may exist in several editions),
+    // and escape LIKE wildcards so %/_/\ in the term are literal.
+    const like = `%${escapeLike(term)}%`;
+    const res = (await ctx.data.query("SELECT ref, MIN(text) AS text FROM content WHERE toc_id = ? AND strip(text) LIKE ? ESCAPE '\\' GROUP BY ref ORDER BY MIN(id) LIMIT 300", [reader.book, like])) as { ref: string; text: string }[];
     setRows(res);
     setBusy(false);
     setRan(true);
@@ -47,7 +60,8 @@ function SearchPanel({ ctx }: { ctx: PluginContext }) {
         <TextInput value={q} onChange={(e) => setQ(e.currentTarget.value)} placeholder={reader.book ? `Search in ${reader.book}…` : 'Open a book first'} disabled={!reader.book} />
       </form>
       {busy && <Text c="dimmed" size="sm" mt="xs">Searching…</Text>}
-      {ran && !busy && <Text c="dimmed" size="sm" mt="xs">{rows.length} match{rows.length === 1 ? '' : 'es'}</Text>}
+      {ran && !busy && notDownloaded && <Text c="dimmed" size="sm" mt="xs">{reader.book} isn't downloaded — open it to download, then search.</Text>}
+      {ran && !busy && !notDownloaded && <Text c="dimmed" size="sm" mt="xs">{rows.length} match{rows.length === 1 ? '' : 'es'}</Text>}
       <Stack gap={4} mt="xs">
         {rows.map((r, i) => (
           <Anchor key={`${r.ref}:${i}`} c="inherit" onClick={() => reader.book && ctx.ui.navigate(reader.book, r.ref)}>

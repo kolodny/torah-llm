@@ -13,17 +13,18 @@ export default function StoragePage() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<{ done: number; total: number; label: string } | null>(null);
 
-  // The tree mirrors what's downloaded: on load (and after any op) checked is synced to the local books, so
-  // downloaded books show checked and partly-downloaded categories show indeterminate.
-  const refreshLocal = useCallback(async () => {
+  // Refresh the "what's actually local" set. `syncChecked` also resets the desired-state checkboxes to match
+  // (used on first load); a run in flight passes false so it preserves any checkbox edits the user made while
+  // the download/clear was running instead of clobbering them with a stale snapshot.
+  const refreshLocal = useCallback(async (syncChecked = false) => {
     const ids = new Set(await getLocalBookIds());
     setLocal(ids);
-    setChecked(new Set(ids));
+    if (syncChecked) setChecked(new Set(ids));
   }, []);
   useEffect(() => {
     void (async () => {
       setToc(await getToc());
-      await refreshLocal();
+      await refreshLocal(true);
     })();
   }, [refreshLocal]);
 

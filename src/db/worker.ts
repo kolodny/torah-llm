@@ -114,16 +114,25 @@ async function streamInto(pool: any, path: string, url: string, onProgress?: (p:
     throw new Error(`Database not available yet at ${url} (server returned a web page). If a data rebuild is in progress, retry in a moment.`);
   // If the host already set Content-Encoding: gzip, the browser inflated the body for us; otherwise inflate here.
   const inflate = gz && (res.headers.get('content-encoding') ?? '').toLowerCase() !== 'gzip';
-  const total = Number(res.headers.get('content-length') ?? 0);
+  // When we inflate, Content-Length is the COMPRESSED size, so received (inflated) would blow past it (>100%).
+  // Drop total in that case so the UI shows MB downloaded instead of a bogus fraction.
+  const total = inflate ? 0 : Number(res.headers.get('content-length') ?? 0);
   const reader = (inflate ? res.body!.pipeThrough(new DecompressionStream('gzip')) : res.body!).getReader();
   let received = 0;
-  await pool.importDb(path, async () => {
-    const { done, value } = await reader.read();
-    if (done || !value) return undefined;
-    received += value.length;
-    onProgress?.({ received, total });
-    return value;
-  });
+  try {
+    await pool.importDb(path, async () => {
+      const { done, value } = await reader.read();
+      if (done || !value) return undefined;
+      received += value.length;
+      onProgress?.({ received, total: total ? Math.max(total, received) : 0 });
+      return value;
+    });
+  } catch (e) {
+    // A failed/aborted stream leaves a truncated file behind; unlink it so a retry re-downloads cleanly
+    // instead of attaching a partial db.
+    if (pool.getFileNames().includes(path)) pool.unlink(path);
+    throw e;
+  }
 }
 
 // --- connection lease (the heart of the multi-tab model) --------------------------------------
@@ -165,14 +174,18 @@ async function bootSequence() {
     openConnection(); // re-acquire after a pause: just reopen, no re-reconcile
     return;
   }
+  const fresh = !pool.getFileNames().includes(BOOT_PATH);
   try {
-    const fresh = !pool.getFileNames().includes(BOOT_PATH);
     if (fresh) await streamInto(pool, BOOT_PATH, bootUrl);
     openConnection();
     if (!fresh) migrateContent();
     await reconcile(pool, fresh);
   } catch (e) {
+    // Only an EXISTING cached db is repaired by wipe + re-stream. A freshly downloaded catalog that's already
+    // corrupt would just re-download the same bad file (and wiping a cache on a transient bad fetch is wrong),
+    // so surface it as a retryable error instead.
     if (!isCorrupt(e)) throw e;
+    if (fresh) throw new Error(`Downloaded catalog is corrupt — retry. (${(e as { message?: string })?.message ?? e})`);
     console.warn('[db] content cache is corrupt — wiping and re-initializing fresh', e);
     try {
       db?.close();

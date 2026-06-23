@@ -12,28 +12,60 @@ import type { Api } from './worker';
 import type { TocRow, Edition, ContentRow, LinkRef, Progress } from './types';
 
 let api: Remote<Api> | null = null;
+let worker: Worker | null = null;
+let listenersBound = false;
+
+// A synchronous runaway inside a SQL function body (evalJS / a plugin fn) blocks the SQLite VM mid-opcode,
+// so the worker's progress-handler timeout never fires and the single worker — hence the whole app — wedges
+// forever. JS can't be interrupted on its own thread, so the only recovery is from the main thread: if an
+// exec() doesn't resolve within the worker's own timeout plus a grace, terminate the worker and recreate it.
+const EXEC_TIMEOUT_MS = 10000;
+const WATCHDOG_GRACE_MS = 6000;
 
 function start(): Remote<Api> {
   if (api) return api;
-  const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
   api = wrap<Api>(worker);
 
   // Drop the lease the moment the page stops being usable, so this tab isn't holding the OPFS handles
   // when it's backgrounded/frozen/reloaded. The next query re-acquires automatically. visibilitychange
-  // (hidden) fires reliably while JS can still run; pagehide/freeze are belt-and-suspenders.
-  const release = () => void api?.release().catch(() => {});
-  if (typeof document !== 'undefined')
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') release();
-    });
-  addEventListener('pagehide', release);
-  addEventListener('freeze', release); // Page Lifecycle API: about to be frozen
+  // (hidden) fires reliably while JS can still run; pagehide/freeze are belt-and-suspenders. Bind ONCE and
+  // route through the mutable `api`, so recreating the worker (watchdog) neither stacks duplicate listeners
+  // nor points them at a dead worker.
+  if (!listenersBound) {
+    listenersBound = true;
+    const release = () => void api?.release().catch(() => {});
+    if (typeof document !== 'undefined')
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') release();
+      });
+    addEventListener('pagehide', release);
+    addEventListener('freeze', release); // Page Lifecycle API: about to be frozen
+  }
 
   return api;
 }
 
 async function withApi<T>(fn: (api: Remote<Api>) => Promise<T>): Promise<T> {
   return fn(start());
+}
+
+// Run an exec() under a main-thread watchdog. A wedged worker can't time itself out, so if the call hasn't
+// resolved in time we kill the worker, drop the cached api (the next call lazily spawns + re-boots a fresh
+// one), and reject. Used ONLY for the user/plugin-SQL exec path — NOT ensureBook (downloads are long) or release.
+function execWithWatchdog(sql: string, params: unknown[]): Promise<Record<string, unknown>[]> {
+  return withApi((cur) => {
+    const call = cur.exec(sql, params) as Promise<Record<string, unknown>[]>;
+    return new Promise<Record<string, unknown>[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        worker?.terminate();
+        worker = null;
+        api = null; // next call spawns a fresh worker via start()
+        reject(new Error('Query timed out and the database was restarted — simplify the query.'));
+      }, EXEC_TIMEOUT_MS + WATCHDOG_GRACE_MS);
+      call.then(resolve, reject).finally(() => clearTimeout(timer));
+    });
+  });
 }
 
 export async function sqliteVersion(): Promise<string> {
@@ -234,7 +266,7 @@ export function ensureBook(tocId: string, onProgress?: (p: Progress) => void): P
 
 /** Raw read query against the local DB — for plugins (toc/editions/content/meta/links). */
 export async function query(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-  return withApi((api) => api.exec(sql, params)) as Promise<Record<string, unknown>[]>;
+  return execWithWatchdog(sql, params);
 }
 
 /** Table → column names, for schema-aware SQL autocomplete. */
@@ -264,7 +296,7 @@ export async function wipe() {
 // Dev-only debug handle so QA (and the console) can drive the DB layer directly.
 if (import.meta.env.DEV) {
   (globalThis as Record<string, unknown>).__torahDb = {
-    sql: (sql: string, params: unknown[] = []) => withApi((api) => api.exec(sql, params)),
+    sql: (sql: string, params: unknown[] = []) => execWithWatchdog(sql, params),
     getToc,
     getEditions,
     getContent,

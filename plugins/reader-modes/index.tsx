@@ -133,17 +133,66 @@ function TikkunReader({ view, ctx }: { view: BookView; ctx: PluginContext }) {
 }
 
 // ---- Mikraot Gedolot --------------------------------------------------------------------------
+// IMPORTANT: this editor must work off WHOLE-BOOK data, not the paginated render window. Since 036 the
+// host passes view.content/view.links as only the currently-loaded section, so MG fetches its own verse
+// ladder + link/source metadata via ctx.data (book-wide, text-free). It also renders a single focused
+// pasuk, so it declares managesOwnScroll (the host then doesn't drive its infinite-scroll sentinels).
 function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
+  const book = view.reader.book ?? '';
   const heEd = useMemo(() => hebrewEdition(view), [view.editions, view.reader.selected]);
   const enEd = useMemo(
     () => view.editions.find((e) => view.reader.selected.includes(e.id) && e.lang === 'en'),
     [view.editions, view.reader.selected]
   );
-  const verses = useMemo(() => {
-    const refs = new Set<string>();
-    for (const r of view.content ?? []) refs.add(r.ref);
-    return [...refs].sort(cmpRef);
-  }, [view.content]);
+
+  // The whole-book verse ladder (text-free), so prev/next walks the entire book — not just the loaded window.
+  const [verses, setVerses] = useState<string[]>([]);
+  useEffect(() => {
+    if (!book) return setVerses([]);
+    let cancelled = false;
+    ctx.data
+      .query('SELECT DISTINCT ref FROM content WHERE toc_id = ?', [book])
+      .then((rows) => !cancelled && setVerses((rows as { ref: string }[]).map((r) => r.ref).sort(cmpRef)))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [book, ctx]);
+
+  // Every distinct linked source across the WHOLE book (id, type, count) — aggregated server-side, text-free.
+  const [sources, setSources] = useState<{ id: string; type: string; count: number }[]>([]);
+  useEffect(() => {
+    if (!book) return setSources([]);
+    let cancelled = false;
+    ctx.data
+      .query(
+        `SELECT other AS id, connection_type AS type, COUNT(*) AS count FROM (
+           SELECT to_id AS other, connection_type FROM links WHERE from_id = ?
+           UNION ALL
+           SELECT from_id AS other, connection_type FROM links WHERE to_id = ?
+         ) GROUP BY other, connection_type`,
+        [book, book]
+      )
+      .then((rows) => {
+        if (cancelled) return;
+        const m = new Map<string, { type: string; count: number }>();
+        for (const r of rows as { id: string; type: string | null; count: number }[]) {
+          const t = r.type ?? 'reference';
+          const e = m.get(r.id);
+          if (e) {
+            e.count += r.count;
+            if (typeRank(typeLabel(t)) < typeRank(typeLabel(e.type))) e.type = t; // keep the source's best type
+          } else {
+            m.set(r.id, { type: t, count: r.count });
+          }
+        }
+        setSources([...m.entries()].map(([id, v]) => ({ id, type: v.type, count: v.count })));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [book, ctx]);
 
   const [idx, setIdx] = useState(0);
   useEffect(() => {
@@ -153,29 +202,26 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
   }, [view.reader.ref, verses]);
   const ref = verses[Math.min(idx, verses.length - 1)] ?? '';
 
-  const textOf = (edId: string | undefined) =>
-    edId ? (view.content ?? []).find((r) => r.edition_id === edId && r.ref === ref)?.text ?? '' : '';
-
-  // Every distinct linked source across the WHOLE book (from the links), with its type + link count.
-  const sources = useMemo(() => {
-    const m = new Map<string, { type: string; count: number }>();
-    for (const arr of Object.values(view.links)) {
-      for (const l of arr) {
-        const t = l.connectionType ?? 'reference';
-        const e = m.get(l.otherId);
-        if (e) {
-          e.count += 1;
-          if (typeRank(typeLabel(t)) < typeRank(typeLabel(e.type))) e.type = t; // keep the source's best type
-        } else {
-          m.set(l.otherId, { type: t, count: 1 });
-        }
-      }
-    }
-    return [...m.entries()].map(([id, v]) => ({ id, type: v.type, count: v.count }));
-  }, [view.links]);
+  // Base text of the focused pasuk — fetched directly (the verse may be outside the host's loaded window).
+  const [base, setBase] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!book || !ref) return setBase({});
+    let cancelled = false;
+    ctx.data
+      .getSegment(book, ref)
+      .then((rows) => {
+        if (cancelled) return;
+        const m: Record<string, string> = {};
+        for (const r of rows) m[r.edition_id] = r.text;
+        setBase(m);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [book, ref, ctx]);
 
   // Selection is per-book (a Genesis layout shouldn't carry to Exodus); null = not yet chosen for this book.
-  const book = view.reader.book ?? '';
   const [selected, setSelected] = useState<string[] | null>(() => ctx.config.get<string[]>(`mg.sources:${book}`) ?? null);
   useEffect(() => {
     setSelected(ctx.config.get<string[]>(`mg.sources:${book}`) ?? null);
@@ -195,29 +241,58 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
   const [showSel, setShowSel] = useState(false);
   const [filter, setFilter] = useState('');
 
-  // Linked refs for the focused verse, grouped by chosen source: { sourceId -> [otherRef, …] }.
-  const groups = useMemo(() => {
-    const m = new Map<string, string[]>();
-    for (const l of view.links[ref] ?? []) {
-      if (!chosen.includes(l.otherId)) continue;
-      (m.get(l.otherId) ?? m.set(l.otherId, []).get(l.otherId)!).push(l.otherRef);
-    }
-    for (const refs of m.values()) refs.sort(cmpRef);
-    return [...m.entries()];
-  }, [view.links, ref, chosen]);
+  // Linked refs for the focused verse, grouped by chosen source — fetched directly (not from the window).
+  const [focusLinks, setFocusLinks] = useState<Map<string, string[]>>(new Map());
+  useEffect(() => {
+    if (!book || !ref) return setFocusLinks(new Map());
+    let cancelled = false;
+    ctx.data
+      .query(
+        `SELECT to_id AS id, to_ref AS oref FROM links WHERE from_id = ? AND from_ref = ?
+         UNION ALL
+         SELECT from_id AS id, from_ref AS oref FROM links WHERE to_id = ? AND to_ref = ?`,
+        [book, ref, book, ref]
+      )
+      .then((rows) => {
+        if (cancelled) return;
+        const m = new Map<string, string[]>();
+        for (const r of rows as { id: string; oref: string }[]) (m.get(r.id) ?? m.set(r.id, []).get(r.id)!).push(r.oref);
+        for (const a of m.values()) a.sort(cmpRef);
+        setFocusLinks(m);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [book, ref, ctx]);
 
+  const groups = useMemo(() => [...focusLinks.entries()].filter(([id]) => chosen.includes(id)), [focusLinks, chosen]);
+
+  // Load commentary text for the focused verse — ONLY from books already downloaded (no silent auto-download,
+  // matching the app's no-autodownload policy). Selected-but-missing sources get an explicit Download button;
+  // sources that error are surfaced (not silently dropped) with a retry.
   const [comms, setComms] = useState<{ id: string; text: string }[]>([]);
+  const [needDl, setNeedDl] = useState<string[]>([]);
+  const [failed, setFailed] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [dlNonce, setDlNonce] = useState(0);
   useEffect(() => {
     if (!ref) return;
     let cancelled = false;
     setLoading(true);
     setComms([]);
+    setNeedDl([]);
+    setFailed([]);
     (async () => {
       const out: { id: string; text: string }[] = [];
+      const missing: string[] = [];
+      const errored: string[] = [];
       for (const [id, refs] of groups) {
         try {
-          await ctx.data.ensureBook(id);
+          if (!(await ctx.data.hasLocalContent(id))) {
+            missing.push(id);
+            continue;
+          }
           const parts: string[] = [];
           for (const r of refs) {
             const rows = await ctx.data.getSegment(id, r);
@@ -227,19 +302,34 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
           const text = parts.join(' ').trim();
           if (text) out.push({ id, text });
         } catch {
-          /* skip a source that won't load */
+          errored.push(id);
         }
         if (cancelled) return;
       }
       if (!cancelled) {
         setComms(out);
+        setNeedDl(missing);
+        setFailed(errored);
         setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [ref, groups, ctx]);
+  }, [ref, groups, ctx, dlNonce]);
+
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const downloadSource = async (id: string) => {
+    setDownloading(id);
+    try {
+      await ctx.data.ensureBook(id);
+      setDlNonce((n) => n + 1); // re-run the load now that it's local
+    } catch {
+      setFailed((f) => (f.includes(id) ? f : [...f, id]));
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   // The selector list: sources grouped by type, filterable, sorted commentary-first then by link count.
   const groupedSources = useMemo(() => {
@@ -255,8 +345,8 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
   }, [sources, filter]);
 
   if (!verses.length) return <p className="muted">Loading…</p>;
-  const baseHe = textOf(heEd?.id);
-  const baseEn = textOf(enEd?.id);
+  const baseHe = heEd ? base[heEd.id] ?? '' : '';
+  const baseEn = enEd ? base[enEd.id] ?? '' : '';
   return (
     <div className="mg">
       <div className="mg-bar">
@@ -314,7 +404,6 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
       <div className="mg-comms">
         {loading && <p className="muted">Loading your sources…</p>}
         {!loading && !chosen.length && <p className="muted">Open ⚙ Sources to choose the commentaries (and targum, midrash, …) that wrap the text.</p>}
-        {!loading && chosen.length > 0 && !comms.length && <p className="muted">None of your selected sources comment on this verse.</p>}
         {comms.map((c, i) => (
           <div className="mg-comm" key={`${c.id}:${i}`}>
             <div className="mg-comm-src">{c.id}</div>
@@ -323,6 +412,25 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
             </p>
           </div>
         ))}
+        {/* Selected sources that link this verse but aren't downloaded — explicit per-source download (no autodownload). */}
+        {needDl.map((id) => (
+          <div className="mg-comm mg-comm-needdl" key={`dl:${id}`}>
+            <div className="mg-comm-src">{id}</div>
+            <button type="button" className="mg-dl-btn" disabled={downloading === id} onClick={() => downloadSource(id)}>
+              {downloading === id ? 'Downloading…' : '↓ Download to show'}
+            </button>
+          </div>
+        ))}
+        {failed.map((id) => (
+          <div className="mg-comm mg-comm-failed" key={`err:${id}`}>
+            <div className="mg-comm-src">{id}</div>
+            <span className="muted">couldn’t load · </span>
+            <button type="button" className="mg-dl-btn" onClick={() => downloadSource(id)}>retry</button>
+          </div>
+        ))}
+        {!loading && chosen.length > 0 && !comms.length && !needDl.length && !failed.length && (
+          <p className="muted">None of your selected sources comment on this verse.</p>
+        )}
       </div>
     </div>
   );
@@ -349,6 +457,7 @@ export default definePlugin({
     ctx.contribute('viewer', 'editor', {
       id: 'mikraot-gedolot',
       title: 'Mikraot Gedolot',
+      managesOwnScroll: true, // renders a single focused pasuk → host must not drive infinite-scroll sentinels
       icon: '📖',
       canRender: (reader: ReaderContext) => (reader.book ? 45 : 0),
       render: ({ view }: EditorProps) => <MikraotGedolot view={view} ctx={ctx} />,

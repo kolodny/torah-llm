@@ -110,12 +110,15 @@ export default function ViewerPage() {
   const [content, setContent] = useState<ContentRow[]>([]); // rows for the loaded window only
   const [links, setLinks] = useState<Record<string, LinkRef[]>>({});
   const [sections, setSections] = useState<string[]>([]); // meta section names (Chapter/Verse…)
+  const [bookTotals, setBookTotals] = useState<{ sections: number; verses: number } | null>(null); // whole-book size
   const [loadingMore, setLoadingMore] = useState<'up' | 'down' | null>(null);
   const [notLocal, setNotLocal] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const viewerRef = useRef<HTMLElement>(null);
+  const bookRef = useRef(book); // current book, for guarding async results against a mid-flight book switch
+  bookRef.current = book;
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const loadedRef = useRef(loaded);
@@ -124,6 +127,7 @@ export default function ViewerPage() {
   const prependAdjustRef = useRef<{ h: number; t: number } | null>(null); // scroll restore after prepend
   const actedRef = useRef<string | null>(null); // the ref we've already navigated/scrolled to (or set from scroll)
   const scrolledForRef = useRef<string | null>(null); // last ref we scrolled+flashed to
+  const managesOwnScrollRef = useRef(false); // mirror of managesOwnScroll for the IO callback (computed later)
 
   const refreshLocal = useCallback(async () => setLocal(new Set(await getLocalBookIds())), []);
   useEffect(() => {
@@ -146,18 +150,30 @@ export default function ViewerPage() {
     []
   );
 
-  // Open a book: load its editions/meta + the (cheap, text-free) section ladder. The verses for the
-  // initial section are loaded by the navigation effect below — never the whole book at once.
-  const loadBookSkeleton = useCallback(async (b: string) => {
-    if (!(await hasLocalContent(b))) {
-      setNotLocal(true);
-      return false;
-    }
+  // Open a book: load its editions/meta + the (cheap, text-free) section ladder + whole-book totals. Returns
+  // the data (the caller applies it under a not-stale guard) — the verses for the initial section are loaded
+  // by the navigation effect below, never the whole book at once.
+  type Skeleton =
+    | { notLocal: true }
+    | { notLocal: false; eds: Edition[]; sectionNames: string[]; keys: string[]; totals: { sections: number; verses: number } };
+  const loadBookSkeleton = useCallback(async (b: string): Promise<Skeleton> => {
+    if (!(await hasLocalContent(b))) return { notLocal: true };
     const [eds, meta, secs] = await Promise.all([getEditions(b), getMeta(b), getBookSections(b)]);
-    setEditions(eds);
-    setSections(meta.sectionNames);
-    setSectionKeys(secs.map((s) => s.key).sort(cmpRef));
-    return true;
+    return {
+      notLocal: false,
+      eds,
+      sectionNames: meta.sectionNames,
+      keys: secs.map((s) => s.key).sort(cmpRef),
+      totals: { sections: secs.length, verses: secs.reduce((n, s) => n + (Number(s.count) || 0), 0) },
+    };
+  }, []);
+
+  const applySkeleton = useCallback((r: Skeleton) => {
+    if (r.notLocal) return setNotLocal(true);
+    setEditions(r.eds);
+    setSections(r.sectionNames);
+    setSectionKeys(r.keys);
+    setBookTotals(r.totals);
   }, []);
 
   useEffect(() => {
@@ -168,16 +184,19 @@ export default function ViewerPage() {
     setSections([]);
     setSectionKeys(null);
     setLoaded(null);
+    setBookTotals(null);
     setNotLocal(false);
     actedRef.current = null;
     scrolledForRef.current = null;
     if (!book) return;
     let cancelled = false;
-    loadBookSkeleton(book).catch((e) => !cancelled && setError(String(e)));
+    loadBookSkeleton(book)
+      .then((r) => !cancelled && applySkeleton(r)) // guard: a stale prior-book load must not clobber the new book
+      .catch((e) => !cancelled && setError(String(e)));
     return () => {
       cancelled = true;
     };
-  }, [book, loadBookSkeleton]);
+  }, [book, loadBookSkeleton, applySkeleton]);
 
   // Navigation: load (or jump to) the section for the focused ref. If that section is already in the
   // loaded window, do nothing (the scroll-to effect handles it); otherwise reset the window to it.
@@ -217,6 +236,7 @@ export default function ViewerPage() {
       setLoadingMore(dir);
       try {
         const { rows, lnk } = await fetchSection(book, sectionKeys[idx]);
+        if (bookRef.current !== book) return; // a book switch landed mid-fetch — don't append stale rows
         if (dir === 'up') {
           const root = viewerRef.current;
           prependAdjustRef.current = root ? { h: root.scrollHeight, t: root.scrollTop } : null;
@@ -243,7 +263,9 @@ export default function ViewerPage() {
     const root = viewerRef.current;
     const top = topSentinelRef.current;
     const bot = bottomSentinelRef.current;
-    if (!root || !sectionKeys || (!top && !bot)) return;
+    // Editors that render a fixed slice (managesOwnScroll) don't grow with the window, so observing their
+    // sentinels would cascade a load of every section. Skip — they self-fetch what they need.
+    if (!root || !sectionKeys || managesOwnScrollRef.current || (!top && !bot)) return;
     const io = new IntersectionObserver(
       (entries) => {
         for (const en of entries) {
@@ -259,7 +281,7 @@ export default function ViewerPage() {
     if (top) io.observe(top);
     if (bot) io.observe(bot);
     return () => io.disconnect();
-  }, [sectionKeys, loaded, loadMore]);
+  }, [sectionKeys, loaded, loadMore, state.editorId]);
 
   // Keep the user pinned to the same content when a previous section is prepended above the viewport.
   useLayoutEffect(() => {
@@ -276,14 +298,15 @@ export default function ViewerPage() {
     try {
       await ensureBook(book, (p) => setDownloading(p.total ? `${Math.round((p.received / p.total) * 100)}%` : `${(p.received / 1e6).toFixed(1)} MB`));
       setNotLocal(false);
-      await loadBookSkeleton(book);
+      const r = await loadBookSkeleton(book);
+      if (bookRef.current === book) applySkeleton(r);
       await refreshLocal();
     } catch (e) {
       setError(String(e));
     } finally {
       setDownloading(null);
     }
-  }, [book, loadBookSkeleton, refreshLocal]);
+  }, [book, loadBookSkeleton, applySkeleton, refreshLocal]);
 
   const shown = useMemo(() => {
     const valid = state.selectedEditionIds.filter((id) => editions.some((e) => e.id === id));
@@ -366,9 +389,23 @@ export default function ViewerPage() {
   const readerCtx = useMemo<ReaderContext>(() => ({ book, ref, editions, selected: shown }), [book, ref, editions, shown]);
   usePublishReader(readerCtx);
   const view = useMemo<BookView>(
-    () => ({ reader: readerCtx, editions, content, links, sections, busy: !!downloading, setEditions: setEd }),
-    [readerCtx, editions, content, links, sections, downloading, setEd]
+    () => ({ reader: readerCtx, editions, content, links, sections, bookTotals, busy: !!downloading, setEditions: setEd }),
+    [readerCtx, editions, content, links, sections, bookTotals, downloading, setEd]
   );
+
+  // Which editor will render — so we can SKIP the infinite-scroll sentinels for editors that render a fixed
+  // slice (managesOwnScroll, e.g. Mikraot Gedolot). Otherwise a short editor keeps the bottom sentinel in the
+  // prefetch zone and cascades a load of every section. (Mirrors EditorHost's selection.)
+  const editorsForScroll = useSlot<EditorDef>('viewer', 'editor');
+  const chosenEditor = useMemo(() => {
+    const c = editorsForScroll
+      .map((e) => ({ e, score: e.canRender(readerCtx) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    return c.length ? c.find((x) => x.e.id === state.editorId)?.e ?? c[0].e : null;
+  }, [editorsForScroll, readerCtx, state.editorId]);
+  const managesOwnScroll = !!chosenEditor?.managesOwnScroll;
+  managesOwnScrollRef.current = managesOwnScroll;
 
   // Responsive: full flex row on desktop; catalog + right-rail become Drawers on mobile (≥48em = Mantine sm).
   const isDesktop = useMediaQuery('(min-width: 48em)', typeof window !== 'undefined' ? window.innerWidth >= 768 : true);
@@ -410,7 +447,7 @@ export default function ViewerPage() {
             </Paper>
           ) : loaded ? (
             <>
-              <div ref={topSentinelRef} className="scroll-sentinel" aria-hidden />
+              {!managesOwnScroll && <div ref={topSentinelRef} className="scroll-sentinel" aria-hidden />}
               {loadingMore === 'up' && (
                 <p className="muted load-more" data-testid="load-more-up">
                   <Loader size="xs" /> Loading previous…
@@ -422,7 +459,7 @@ export default function ViewerPage() {
                   <Loader size="xs" /> Loading more…
                 </p>
               )}
-              <div ref={bottomSentinelRef} className="scroll-sentinel" aria-hidden />
+              {!managesOwnScroll && <div ref={bottomSentinelRef} className="scroll-sentinel" aria-hidden />}
             </>
           ) : (
             <p className="muted" data-testid="status">
@@ -652,7 +689,7 @@ function SortableChip({ edition, onRemove }: { edition: Edition; onRemove: () =>
 }
 
 // === verses ===================================================================================
-function Verses({ rows, editions, selected, links, sections }: { rows: ContentRow[]; editions: Edition[]; selected: string[]; links: Record<string, LinkRef[]>; sections: string[] }) {
+function Verses({ rows, editions, selected, links, sections, bookTotals }: { rows: ContentRow[]; editions: Edition[]; selected: string[]; links: Record<string, LinkRef[]>; sections: string[]; bookTotals?: { sections: number; verses: number } | null }) {
   const book = editions[0]?.toc_id ?? '';
   const langOf = useMemo(() => {
     const m = new Map<string, string>();
@@ -731,7 +768,7 @@ function Verses({ rows, editions, selected, links, sections }: { rows: ContentRo
   return (
     <div className="verses" onClick={onRefClick}>
       <p className="muted" data-testid="verse-count">
-        {chapters.byRef.size} verses · {chapters.grouped.length} chapters
+        {bookTotals ? `${bookTotals.verses} verses · ${bookTotals.sections} chapters` : `${chapters.byRef.size} verses · ${chapters.grouped.length} chapters`}
         {!selected.length && ' · add an edition above'}
         {standaloneIds.length > 0 && ` · ${standaloneIds.length} shown separately (different segmentation)`}
       </p>
@@ -1020,7 +1057,7 @@ coreContext.contribute('viewer', 'editor', {
   render: ({ view }: { view: BookView }) => (
     <>
       {view.editions.length > 0 && <EditionBar editions={view.editions} shown={view.reader.selected} onSetEd={view.setEditions} />}
-      {view.content && <Verses rows={view.content} editions={view.editions} selected={view.reader.selected} links={view.links} sections={view.sections} />}
+      {view.content && <Verses rows={view.content} editions={view.editions} selected={view.reader.selected} links={view.links} sections={view.sections} bookTotals={view.bookTotals} />}
     </>
   ),
 } as EditorDef);
@@ -1029,5 +1066,10 @@ coreContext.contribute('viewer', 'editor', {
   title: 'Flow',
   icon: '☰',
   canRender: (r: ReaderContext) => (r.book ? 50 : 0),
-  render: ({ view }: { view: BookView }) => <ContinuousReader view={view} />,
+  render: ({ view }: { view: BookView }) => (
+    <>
+      {view.editions.length > 0 && <EditionBar editions={view.editions} shown={view.reader.selected} onSetEd={view.setEditions} />}
+      <ContinuousReader view={view} />
+    </>
+  ),
 } as EditorDef);

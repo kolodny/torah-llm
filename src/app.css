@@ -157,6 +157,12 @@ body {
 .scroll-sentinel { height: 1px; }
 .load-more { display: flex; align-items: center; gap: 8px; padding: 12px 0; }
 
+/* Mikraot Gedolot: per-source download / retry affordance (no silent auto-download). */
+.mg-dl-btn { font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--accent); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.mg-dl-btn:hover:not(:disabled) { background: #fbeec8; }
+.mg-dl-btn:disabled { opacity: 0.6; cursor: default; }
+.mg-comm-needdl, .mg-comm-failed { display: flex; align-items: center; gap: 8px; }
+
 .muted { color: var(--muted); font-size: 14px; }
 
 .chapter { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 18px; }

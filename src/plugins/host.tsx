@@ -12,6 +12,7 @@ import {
   getSiblings,
   getLinks,
   ensureBook,
+  hasLocalContent,
   query as dbQuery,
   schema as dbSchema,
   defineFunctions as dbDefineFunctions,
@@ -139,6 +140,12 @@ function readOnlyQuery(sql: string, params?: unknown[]): Promise<Record<string, 
   if (!/^(?:SELECT|WITH|PRAGMA|EXPLAIN)\b/i.test(head)) {
     return Promise.reject(new Error(`query() is read-only (SELECT/WITH/PRAGMA/EXPLAIN only) — refused: ${head.slice(0, 50)}`));
   }
+  // Reject multi-statement SQL (e.g. `SELECT 1; DELETE FROM content`): trim, drop a single trailing
+  // semicolon, then refuse if any `;` remains — a sign the body holds more than one statement.
+  const body = head.trim().replace(/;\s*$/, '');
+  if (body.includes(';')) {
+    return Promise.reject(new Error(`query() allows a single statement only — refused: ${body.slice(0, 50)}`));
+  }
   return dbQuery(sql, params);
 }
 // Namespace a plugin SQL-function name by plugin id: defineFunctions({name:'find'}) from torah-code →
@@ -148,7 +155,7 @@ function nsName(pluginId: string, name: string): string {
   if (!name || name === p) return p;
   return name.startsWith(p + '_') ? name : `${p}_${name}`;
 }
-const fullData: PluginData = { getToc, getEditions, getContent, getSegment, getSiblings, getLinks, ensureBook, query: readOnlyQuery, schema: dbSchema, defineFunctions: dbDefineFunctions };
+const fullData: PluginData = { getToc, getEditions, getContent, getSegment, getSiblings, getLinks, ensureBook, hasLocalContent, query: readOnlyQuery, schema: dbSchema, defineFunctions: dbDefineFunctions };
 function denied<T extends object>(cap: string, methods: string[]): T {
   const o: Record<string, () => never> = {};
   for (const m of methods)
@@ -193,7 +200,7 @@ function contextFor(manifest: PluginManifest): PluginContext {
   const grant = (p: string) => manifest.id === 'core' || perms.has(p);
   const data: PluginData = grant('data:read')
     ? { ...fullData, defineFunctions: (specs) => dbDefineFunctions(specs.map((s) => ({ ...s, name: nsName(manifest.id, s.name) }))) }
-    : denied<PluginData>('data:read', ['getToc', 'getEditions', 'getContent', 'getSegment', 'getSiblings', 'getLinks', 'ensureBook', 'query', 'schema', 'defineFunctions']);
+    : denied<PluginData>('data:read', ['getToc', 'getEditions', 'getContent', 'getSegment', 'getSiblings', 'getLinks', 'ensureBook', 'hasLocalContent', 'query', 'schema', 'defineFunctions']);
   const storage: PluginStorage = grant('storage')
     ? storageFor(manifest.id)
     : denied<PluginStorage>('storage', ['get', 'set', 'delete', 'keys']);
@@ -259,14 +266,19 @@ function activatePlugin(id: string) {
   if (!d) return;
   const ctx = contextFor(d.plugin.manifest);
   activated.set(id, ctx);
-  try {
-    Promise.resolve(d.plugin.activate(ctx)).catch((e) => console.error(`[plugins] "${id}" activate rejected:`, e));
-    actions.emit('plugin.activated', { id });
-    console.log(`[plugins] activated "${id}"`);
-  } catch (e) {
+  // On a failed activate() (sync throw or async rejection), dispose everything it already registered so a
+  // half-activated plugin leaves no orphaned pages/slots/listeners behind.
+  const cleanup = (e: unknown) => {
     console.error(`[plugins] "${id}" failed to activate:`, e);
     for (const sub of ctx.subscriptions) sub.dispose();
     activated.delete(id);
+  };
+  try {
+    Promise.resolve(d.plugin.activate(ctx)).catch(cleanup);
+    actions.emit('plugin.activated', { id });
+    console.log(`[plugins] activated "${id}"`);
+  } catch (e) {
+    cleanup(e);
   }
 }
 
