@@ -79,10 +79,9 @@ LIMIT 25;`,
     label: 'A word with two cantillation marks (Torah)',
     sql: `-- The famous "double-cantillation" words: the Ten Commandments' dual ta'am elyon/taḥton (Exodus 20,
 -- Deuteronomy 5) and the Reuben pisḳa (Genesis 35:22) — a single word carrying two accent systems at once.
--- Pure SQL, no evalJS: a recursive CTE splits each Hebrew verse into words (on space / maqaf / paseq), then
--- we count DISTINCT disjunctive te'amim per word using the Hebrew-name char functions. Conjunctive
--- "servants" (munaḥ…yeraḥ ben yomo) are excluded, and zinor counts as zarqa, so an ordinary
--- servant+disjunctive pair doesn't qualify — only a genuine two-disjunctive word does.
+-- Pure SQL, no evalJS: split each Hebrew verse into words, explode each word into characters, and keep the
+-- words with >= 2 DISTINCT *disjunctive* te'amim. "Disjunctive" = the cantillation range U+0591–U+05AE minus
+-- the conjunctive "servants" U+05A3–U+05AA; zinor (U+05AE) is folded into zarqa (U+0598) since they're one accent.
 WITH RECURSIVE
   src AS (
     SELECT c.toc_id, c.ref,
@@ -90,23 +89,26 @@ WITH RECURSIVE
     FROM content c JOIN editions e ON e.id = c.edition_id
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   ),
-  words(toc_id, ref, word, rest) AS (
+  words(toc_id, ref, word, rest) AS (        -- split each verse on space / maqaf / paseq
     SELECT toc_id, ref, '', t FROM src
     UNION ALL
     SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1)
     FROM words WHERE rest <> ''
+  ),
+  chars(toc_id, ref, word, i, cp) AS (       -- explode each word into its characters' code points
+    SELECT toc_id, ref, word, 1, unicode(word) FROM words WHERE word <> ''
+    UNION ALL
+    SELECT toc_id, ref, word, i + 1, unicode(substr(word, i + 1, 1)) FROM chars WHERE i < length(word)
+  ),
+  hits AS (                                  -- words carrying two distinct disjunctive accents
+    SELECT toc_id, ref, word FROM chars
+    GROUP BY toc_id, ref, word
+    HAVING COUNT(DISTINCT CASE
+             WHEN cp BETWEEN 0x0591 AND 0x05AE AND cp NOT BETWEEN 0x05A3 AND 0x05AA
+             THEN CASE WHEN cp = 0x05AE THEN 0x0598 ELSE cp END   -- fold zinor (05AE) into zarqa (0598)
+           END) >= 2
   )
--- one row per verse (the first such word) — the qualifying set is small (the Decalogue + a few Genesis verses).
-SELECT toc_id, ref, min(word) AS word FROM words
-WHERE word <> ''
-  AND ( (instr(word, ETNAHTA()) > 0)    + (instr(word, SEGOLTA()) > 0)  + (instr(word, SHALSHELET()) > 0)
-      + (instr(word, ZAQEF_QATAN()) > 0)+ (instr(word, ZAQEF_GADOL()) > 0) + (instr(word, TIPEHA()) > 0)
-      + (instr(word, REVIA()) > 0)      + (instr(word, PASHTA()) > 0)   + (instr(word, YETIV()) > 0)
-      + (instr(word, TEVIR()) > 0)      + (instr(word, GERESH()) > 0)   + (instr(word, GERESH_MUQDAM()) > 0)
-      + (instr(word, GERSHAYIM()) > 0)  + (instr(word, QARNEY_PARA()) > 0) + (instr(word, TELISHA_GEDOLA()) > 0)
-      + (instr(word, PAZER()) > 0)      + (instr(word, ATNAH_HAFUKH()) > 0) + (instr(word, OLE()) > 0)
-      + (instr(word, ILUY()) > 0)       + (instr(word, DEHI()) > 0)
-      + ((instr(word, ZARQA()) > 0) OR (instr(word, ZINOR()) > 0)) ) >= 2
+SELECT toc_id, ref, min(word) AS word FROM hits   -- one row per verse (the qualifying set is small)
 GROUP BY toc_id, ref
 ORDER BY toc_id, ref
 LIMIT 50;`,
