@@ -60,8 +60,7 @@ const SAMPLES: { label: string; sql: string }[] = [
     sql: `-- Select toc_id + ref and the results table auto-links each verse to the viewer (click a ref or book).
 SELECT c.toc_id, c.ref, substr(strip(c.text), 1, 60) AS preview
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he' AND c.ref LIKE '1:%'
-LIMIT 25;`,
+WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he' AND c.ref LIKE '1:%';`,
   },
   {
     label: 'Verses with two or more pazer cantillations',
@@ -73,8 +72,7 @@ SELECT c.toc_id, c.ref,
 FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   AND pazer_count >= 2
-ORDER BY pazer_count DESC
-LIMIT 25;`,
+ORDER BY pazer_count DESC;`,
   },
   {
     label: 'A word with two cantillation marks (Torah)',
@@ -101,8 +99,7 @@ FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE e.source = 'sefaria' AND e.lang = 'he'
   AND evalJS('/[\\u0591-\\u05AE]{2}/.test(value)', c.text)
 GROUP BY c.toc_id
-ORDER BY double_cantillation_verses DESC
-LIMIT 25;`,
+ORDER BY double_cantillation_verses DESC;`,
   },
   {
     label: 'The most-referenced verses (cross-reference graph)',
@@ -118,8 +115,7 @@ SELECT book AS toc_id, ref, count(*) AS link_count
 FROM ep
 WHERE book IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy')
 GROUP BY book, ref
-ORDER BY link_count DESC
-LIMIT 50;`,
+ORDER BY link_count DESC;`,
   },
   {
     label: 'The Torah’s most-repeated verses (word-for-word)',
@@ -131,8 +127,7 @@ FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
 GROUP BY strip(c.text)
 HAVING times >= 3
-ORDER BY times DESC
-LIMIT 50;`,
+ORDER BY times DESC;`,
   },
   {
     label: 'Genesis 1:1 — seven words and twenty-eight letters',
@@ -154,8 +149,7 @@ SELECT c.toc_id,
 FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he' AND instr(c.ref, ':') > 0
 GROUP BY c.toc_id, chapter
-ORDER BY verses DESC
-LIMIT 25;`,
+ORDER BY verses DESC;`,
   },
   {
     label: 'Largest downloaded books (by verse count)',
@@ -163,8 +157,7 @@ LIMIT 25;`,
 SELECT toc_id, COUNT(DISTINCT ref) AS verses
 FROM content
 GROUP BY toc_id
-ORDER BY verses DESC
-LIMIT 25;`,
+ORDER BY verses DESC;`,
   },
 ];
 

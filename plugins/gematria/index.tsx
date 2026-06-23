@@ -192,8 +192,7 @@ export default definePlugin({
 SELECT c.toc_id, c.ref, gematria(c.text) AS gematria, substr(strip(c.text), 1, 40) AS preview
 FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he' AND c.ref LIKE '1:%'
-ORDER BY gematria DESC
-LIMIT 25;`,
+ORDER BY gematria DESC;`,
     });
     code.registerSample({
       id: 'gematria:pairs',
@@ -206,8 +205,7 @@ WITH g AS MATERIALIZED (
 )
 SELECT link('Genesis', a.ref) AS verse_a, link('Genesis', b.ref) AS verse_b, a.val AS gematria
 FROM g a JOIN g b ON a.val = b.val AND a.ref < b.ref
-ORDER BY a.val DESC
-LIMIT 50;`,
+ORDER BY a.val DESC;`,
     });
     code.registerSample({
       id: 'gematria:rashi',
@@ -228,8 +226,7 @@ verse AS MATERIALIZED (
 SELECT v.book, link(v.book, v.ref) AS verse, link('Rashi on ' || v.book, r.ref) AS rashi, v.val AS gematria
 FROM verse v JOIN rashi r ON r.book = v.book AND r.val = v.val
 WHERE v.val > 100
-ORDER BY v.val DESC
-LIMIT 50;`,
+ORDER BY v.val DESC;`,
     });
     code.registerSample({
       id: 'gematria:verse-equals-word',
@@ -260,8 +257,7 @@ WITH RECURSIVE
   )
 SELECT v.toc_id, v.ref, v.g AS gematria, wv.example AS equal_word, v.verse
 FROM verses v JOIN wval wv ON wv.g = v.g
-ORDER BY v.g DESC
-LIMIT 50;`,
+ORDER BY v.g DESC;`,
     });
     code.registerSample({
       id: 'gematria:triangular',
@@ -294,7 +290,7 @@ WITH RECURSIVE
     UNION ALL
     SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM words WHERE rest <> ''
   )
-SELECT DISTINCT toc_id, ref, word FROM words WHERE word <> '' AND gematria(word) = 376 LIMIT 50;`,
+SELECT DISTINCT toc_id, ref, word FROM words WHERE word <> '' AND gematria(word) = 376;`,
     });
   },
 });
