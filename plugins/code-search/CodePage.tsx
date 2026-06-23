@@ -80,8 +80,8 @@ LIMIT 25;`,
     sql: `-- The famous "double-cantillation" words: the Ten Commandments' dual ta'am elyon/taḥton (Exodus 20,
 -- Deuteronomy 5) and the Reuben pisḳa (Genesis 35:22) — a single word carrying two accent systems at once.
 -- Pure SQL, no evalJS: split each Hebrew verse into words, explode each word into characters, and keep the
--- words with >= 2 DISTINCT *disjunctive* te'amim. "Disjunctive" = the cantillation range U+0591–U+05AE minus
--- the conjunctive "servants" U+05A3–U+05AA; zinor (U+05AE) is folded into zarqa (U+0598) since they're one accent.
+-- words with >= 2 DISTINCT *disjunctive* te'amim — the disjunctive accents named in the IN(...) below (the
+-- conjunctive "servants" munaḥ…yeraḥ-ben-yomo are omitted); zinor is folded into zarqa since they're one accent.
 WITH RECURSIVE
   src AS (
     SELECT c.toc_id, c.ref,
@@ -95,17 +95,20 @@ WITH RECURSIVE
     SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1)
     FROM words WHERE rest <> ''
   ),
-  chars(toc_id, ref, word, i, cp) AS (       -- explode each word into its characters' code points
-    SELECT toc_id, ref, word, 1, unicode(word) FROM words WHERE word <> ''
+  chars(toc_id, ref, word, i, ch) AS (       -- explode each word into its characters
+    SELECT toc_id, ref, word, 1, substr(word, 1, 1) FROM words WHERE word <> ''
     UNION ALL
-    SELECT toc_id, ref, word, i + 1, unicode(substr(word, i + 1, 1)) FROM chars WHERE i < length(word)
+    SELECT toc_id, ref, word, i + 1, substr(word, i + 1, 1) FROM chars WHERE i < length(word)
   ),
   hits AS (                                  -- words carrying two distinct disjunctive accents
     SELECT toc_id, ref, word FROM chars
     GROUP BY toc_id, ref, word
     HAVING COUNT(DISTINCT CASE
-             WHEN cp BETWEEN 0x0591 AND 0x05AE AND cp NOT BETWEEN 0x05A3 AND 0x05AA
-             THEN CASE WHEN cp = 0x05AE THEN 0x0598 ELSE cp END   -- fold zinor (05AE) into zarqa (0598)
+             WHEN ch IN (ETNAHTA(), SEGOLTA(), SHALSHELET(), ZAQEF_QATAN(), ZAQEF_GADOL(), TIPEHA(),
+                         REVIA(), ZARQA(), PASHTA(), YETIV(), TEVIR(), GERESH(), GERESH_MUQDAM(),
+                         GERSHAYIM(), QARNEY_PARA(), TELISHA_GEDOLA(), PAZER(), ATNAH_HAFUKH(),
+                         OLE(), ILUY(), DEHI(), ZINOR())
+             THEN CASE WHEN ch = ZINOR() THEN ZARQA() ELSE ch END   -- count zinor as zarqa
            END) >= 2
   )
 SELECT toc_id, ref, min(word) AS word FROM hits   -- one row per verse (the qualifying set is small)
