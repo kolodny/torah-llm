@@ -268,11 +268,15 @@ LIMIT 50;`,
       label: 'Genesis 1:1 = 2701 = the 73rd triangular number',
       sql: `-- The Torah's opening verse sums to 2701 = 1+2+…+73 — exactly the 73rd "triangular number", a much-cited
 -- numeric symmetry of בְּרֵאשִׁית. gematria() sums the Hebrew letters; evalJS solves n(n+1)/2 = g for n.
-SELECT c.toc_id, c.ref, gematria(c.text) AS gematria,
-       evalJS('(function (x) { var n = Math.floor((Math.sqrt(8 * x + 1) - 1) / 2); return n * (n + 1) / 2 === x ? n : null; })(value)', gematria(c.text)) AS triangular_index,
-       substr(strip(c.text), 1, 45) AS verse
-FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang = 'he';`,
+-- A subquery computes the gematria once, then we both show it and test it for triangularity.
+SELECT toc_id, ref, gematria,
+       evalJS('(function (x) { var n = Math.floor((Math.sqrt(8 * x + 1) - 1) / 2); return n * (n + 1) / 2 === x ? n : null; })(value)', gematria) AS triangular_index,
+       verse
+FROM (
+  SELECT c.toc_id, c.ref, gematria(c.text) AS gematria, substr(strip(c.text), 1, 45) AS verse
+  FROM content c JOIN editions e ON e.id = c.edition_id
+  WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang = 'he'
+);`,
     });
     code.registerSample({
       id: 'gematria:words-equal',

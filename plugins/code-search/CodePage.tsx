@@ -72,7 +72,7 @@ SELECT c.toc_id, c.ref,
        substr(strip(c.text), 1, 50) AS preview
 FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  AND length(c.text) - length(replace(c.text, PAZER(), '')) >= 2
+  AND pazer_count >= 2
 ORDER BY pazer_count DESC
 LIMIT 25;`,
   },
@@ -87,8 +87,22 @@ SELECT c.toc_id, c.ref,
        evalJS('value.split(/\\s+/).find(w => /[\\u0591-\\u05AE]{2}/.test(w))', strip(c.text)) AS word
 FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  AND evalJS('/[\\u0591-\\u05AE]{2}/.test(value)', c.text)
+  AND word IS NOT NULL
 ORDER BY c.toc_id, c.ref;`,
+  },
+  {
+    label: 'Which book has the most double-cantillation verses?',
+    sql: `-- Same "two adjacent ta'am marks" test as above, counted per book across EVERYTHING you've DOWNLOADED.
+-- Surprise: the prose Decalogue is NOT the leader — Psalms, Proverbs and Job run away with it, because the
+-- three poetic "sifrei emet" books use a separate cantillation system that stacks accents far more often.
+-- Download more books in Storage to widen the search. (evalJS runs per Hebrew verse — scans your local corpus.)
+SELECT c.toc_id, count(*) AS double_cantillation_verses
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE e.source = 'sefaria' AND e.lang = 'he'
+  AND evalJS('/[\\u0591-\\u05AE]{2}/.test(value)', c.text)
+GROUP BY c.toc_id
+ORDER BY double_cantillation_verses DESC
+LIMIT 25;`,
   },
   {
     label: 'The most-referenced verses (cross-reference graph)',
