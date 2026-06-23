@@ -235,19 +235,15 @@ ORDER BY v.val DESC;`,
 -- from anywhere in the Torah). e.g. the Shema (Deut 6:4); and Exodus 15:18 = שָׁלוֹם / עֵשָׂו (376). The verse
 -- total is usually large, so matches are weighted toward longer single words. gematria() ignores nikud/te'amim/HTML.
 -- Download the Torah books in Storage first. (Click a verse ref to open it; ORDER BY v.g for the smallest.)
-WITH RECURSIVE
-  src AS (
-    SELECT c.toc_id, c.ref, ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
+WITH
+  words AS MATERIALIZED (         -- every word in the Torah (evalJS splits, json_each unnests)
+    SELECT word.value AS w
     FROM content c JOIN editions e ON e.id = c.edition_id
+      JOIN json_each(evalJS('JSON.stringify(strip(value).split(/[\\s\\u05BE\\u05C0]+/))', c.text)) AS word
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   ),
-  words(toc_id, ref, word, rest) AS (
-    SELECT toc_id, ref, '', t FROM src
-    UNION ALL
-    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM words WHERE rest <> ''
-  ),
   wval AS MATERIALIZED (          -- one example word per distinct gematria value
-    SELECT gematria(word) AS g, min(word) AS example FROM words WHERE word <> '' AND gematria(word) > 0 GROUP BY g
+    SELECT gematria(w) AS g, min(w) AS example FROM words WHERE w <> '' AND gematria(w) > 0 GROUP BY g
   ),
   verses AS MATERIALIZED (        -- each verse's total gematria
     SELECT c.toc_id, c.ref, gematria(max(c.text)) AS g, substr(strip(max(c.text)), 1, 45) AS verse
@@ -278,19 +274,14 @@ FROM (
       id: 'gematria:words-equal',
       label: 'Torah words sharing a famous gematria (376 = שלום = עשו)',
       sql: `-- Every Torah word whose letters sum to 376 — שָׁלוֹם, עֵשָׂו, and others (e.g. וַיַּשְׁכֵּם "and he rose early").
--- Split each verse into words, then keep those with gematria 376. Change 376 to 26 (יהוה), 13 (אהבה / אחד)…
-WITH RECURSIVE
-  src AS (
-    SELECT c.toc_id, c.ref, ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
-    FROM content c JOIN editions e ON e.id = c.edition_id
-    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  ),
-  words(toc_id, ref, word, rest) AS (
-    SELECT toc_id, ref, '', t FROM src
-    UNION ALL
-    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM words WHERE rest <> ''
-  )
-SELECT DISTINCT toc_id, ref, word FROM words WHERE word <> '' AND gematria(word) = 376;`,
+-- evalJS splits each verse into words (as a JSON array), json_each unnests them, and gematria() scores each.
+-- Change 376 to 26 (יהוה), 13 (אהבה / אחד)…
+SELECT DISTINCT c.toc_id, c.ref, word.value AS word
+FROM content c
+  JOIN editions e ON e.id = c.edition_id
+  JOIN json_each(evalJS('JSON.stringify(strip(value).split(/[\\s\\u05BE\\u05C0]+/))', c.text)) AS word
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  AND gematria(word.value) = 376;`,
     });
   },
 });
