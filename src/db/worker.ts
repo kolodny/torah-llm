@@ -1,9 +1,9 @@
 /// <reference lib="webworker" />
 //
-// The dedicated worker that owns SQLite-WASM + the OPFS SAH-pool VFS. It is spawned by the
-// *leader tab* (a window context, where `Worker` exists — a SharedWorker can't spawn it) and
-// shared by every tab via per-tab MessagePorts brokered through the SharedWorker. So one
-// connection backs all tabs: no exclusive-handle conflicts, and downloaded books are shared.
+// The per-page worker that owns SQLite-WASM + the OPFS SAH-pool VFS. Each tab spawns its own (no
+// SharedWorker/leader). Exclusive OPFS handles can't be shared, so the pool is held only during a brief
+// "lease" gated by the 'torah-db' Web Lock and released (pauseVfs) when the page goes inactive — so tabs
+// take turns and an inactive/reloading tab holds nothing. See withLease/release below + LLM/037.
 //
 // Updates are forward-compatible WITHOUT ever re-downloading the corpus (see LLM/022):
 //   /db.sqlite    — the content cache: catalog (toc) + accumulated editions/content/meta/links.
@@ -52,63 +52,31 @@ async function installPoolWithRetry(sqlite3: any) {
   }
 }
 
+// SQLite-WASM loads eagerly (no OPFS handles yet). The SAH pool is installed lazily and only HELD while
+// this tab owns a brief "lease" — the exclusive 'torah-db' Web Lock, with the pool UNPAUSED. Outside a
+// lease the pool is paused, so its OPFS SyncAccessHandles are released and any other tab — or a reload of
+// THIS (inactive) tab — can take ownership immediately. This replaces the old SharedWorker-broker + leader
+// design, whose single worker kept the handles open on frozen/inactive pages and wedged the app on reload.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const init: Promise<{ sqlite3: any; pool: any }> = new Promise((resolve, reject) => {
-  const setup = async () => {
-    const sqlite3 = await sqlite3InitModule(); // print/printErr default to console.log/error
-    const pool = await installPoolWithRetry(sqlite3);
-    // Need room for: /db.sqlite + a slice (merge) + /catalog-tmp + SQLite journals.
-    await pool.reserveMinimumCapacity(8);
-    return { sqlite3, pool };
-  };
-
-  let settled = false;
-  const ok = (h: { sqlite3: unknown; pool: unknown }) => {
-    if (!settled) (settled = true), resolve(h);
-  };
-  const fail = (e: unknown) => {
-    if (!settled) (settled = true), reject(e);
-  };
-
-  if (!navigator.locks?.request) {
-    setup().then(ok, fail);
-    return;
-  }
-
-  // Best-effort serialization of SAH-pool ownership across worker generations: on a fast reload the new
-  // worker waits on 'torah-sahpool' until the previous worker is torn down (the lock auto-releases on
-  // termination, by which point its OPFS handles are freed), so installing the VFS sees clean handles —
-  // a 0-error handoff. installPoolWithRetry handles any residual timing gap.
-  //
-  // CRITICAL: the lock must NEVER be able to hang init. On mobile a PWA is *frozen* (Page Lifecycle),
-  // not terminated, so a backgrounded/zombie prior worker can keep holding this lock indefinitely. Since
-  // every DB call awaits `init`, an unbounded wait here would silently lock up the whole app. So a
-  // watchdog abandons the lock after a short wait and installs without it (retry still resolves the
-  // handle handoff — it may just log a couple of retries). At most one live worker exists (the leader's),
-  // so proceeding past a stuck holder is safe.
-  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  navigator.locks
-    .request('torah-sahpool', { mode: 'exclusive', signal: ac?.signal }, async () => {
-      let held;
-      try {
-        held = await setup();
-      } catch (e) {
-        fail(e);
-        return;
-      }
-      ok(held);
-      await new Promise(() => {}); // hold the lock for this worker's lifetime
-    })
-    .catch(() => {
-      // Request aborted by the watchdog (or rejected) — the fallback install below covers it.
-    });
-
-  setTimeout(() => {
-    if (settled) return;
-    ac?.abort(); // stop waiting on a lock a frozen prior worker may be holding
-    setup().then(ok, fail);
-  }, 4000);
+let sqlite3: any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let pool: any = null;
+const moduleReady = sqlite3InitModule().then((m) => {
+  sqlite3 = m;
 });
+
+async function ensurePool() {
+  await moduleReady;
+  if (!pool) {
+    pool = await installPoolWithRetry(sqlite3);
+    await pool.reserveMinimumCapacity(8); // room for /db.sqlite + a merge slice + /catalog-tmp + journals
+  }
+  return pool;
+}
+
+// A malformed/corrupt cache (e.g. a pre-crash-safety reload mid-merge) can't be repaired in place — the
+// fix is to wipe it and re-stream a fresh catalog (books re-download on demand).
+const isCorrupt = (e: unknown) => /SQLITE_CORRUPT|malformed|not a database|disk image/i.test(String((e as { message?: string })?.message ?? e));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let db: any;
@@ -158,87 +126,151 @@ async function streamInto(pool: any, path: string, url: string, onProgress?: (p:
   });
 }
 
-// Ensure storage is present, current, and open. Retryable: a failed boot (offline / transient
-// fetch error) re-arms so the next call tries again instead of poisoning the worker permanently.
-let bootP: Promise<void> | null = null;
-function boot(): Promise<void> {
-  if (!bootP)
-    bootP = doBoot().catch((e) => {
-      bootP = null;
-      throw e;
-    });
-  return bootP;
-}
+// --- connection lease (the heart of the multi-tab model) --------------------------------------
+// Every API call runs inside withLease(): it ensures we hold the 'torah-db' lock with the pool unpaused
+// and the db open, runs, then (when no op is in flight) schedules a release after a short idle so
+// back-to-back queries don't thrash pause/unpause. release() (called by the page on visibilitychange→
+// hidden / pagehide / freeze) drops the lease immediately so an inactive tab holds no OPFS handles.
+const LEASE_IDLE_MS = 600;
+let booted = false; // first-boot work (download / migrate / reconcile) done this session
+let leaseHeld = false; // lock held + pool unpaused + db open
+let leaseDepth = 0; // in-flight operations — never release mid-op
+let acquiring: Promise<void> | null = null;
+let releaseLock: (() => void) | null = null; // resolves the Web Lock callback → frees the lock
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let releaseWanted = false; // page hidden → release as soon as nothing is in flight
 
-// A malformed/corrupt cache (e.g. a page reload mid-merge before this VFS was made crash-safe) is
-// unrecoverable in place; the only fix is to wipe it and re-stream a fresh catalog (books re-download).
-const isCorrupt = (e: unknown) => /SQLITE_CORRUPT|malformed|not a database|disk image/i.test(String((e as { message?: string })?.message ?? e));
-
-// Drop the local store and re-boot fresh. Used to self-heal a corrupt cache instead of bricking the app.
-async function wipeAndReboot() {
-  const { pool } = await init;
-  try {
-    db?.close();
-  } catch {
-    /* already closed / unusable */
-  }
-  db = undefined;
-  bootP = null;
-  await pool.wipeFiles();
-  await boot();
-}
-
-async function doBoot() {
-  try {
-    await openAndReconcile();
-  } catch (e) {
-    if (!isCorrupt(e)) throw e;
-    console.warn('[db] content cache is corrupt — wiping and re-initializing fresh', e);
-    const { pool } = await init;
-    try {
-      db?.close();
-    } catch {
-      /* unusable */
-    }
-    db = undefined;
-    await pool.wipeFiles();
-    await openAndReconcile(); // fresh download of the boot catalog; books re-merge on demand
-  }
-}
-
-async function openAndReconcile() {
-  const { pool, sqlite3 } = await init;
-
-  // 1. Content cache: open it and bring the schema current by migrating IN PLACE (never re-download).
-  //    `fresh` = the boot DB was just downloaded, so it already matches the published manifest.
-  let fresh = false;
-  if (!pool.getFileNames().includes(BOOT_PATH)) {
-    await streamInto(pool, BOOT_PATH, bootUrl);
-    db = new pool.OpfsSAHPoolDb(BOOT_PATH);
-    fresh = true;
-  } else {
-    db = new pool.OpfsSAHPoolDb(BOOT_PATH);
-    migrateContent();
-  }
-  // Crash-safety: on the OPFS SAH-pool VFS a page reload mid-write can corrupt the file unless the rollback
-  // journal is synced before the DB pages are modified. NORMAL guarantees that ordering (enough to survive
-  // an app crash like a reload) without the default FULL's extra fsyncs — so an interrupted book merge rolls
-  // back cleanly on reopen instead of leaving a malformed image.
+// (Re)open the db connection on the (unpaused) pool. The VFS functions + progress handler are
+// per-connection, so they're (re)installed on every open.
+function openConnection() {
+  db = new pool.OpfsSAHPoolDb(BOOT_PATH);
+  // Crash-safety on the SAH-pool VFS: NORMAL syncs the rollback journal before db pages, so a reload
+  // mid-write rolls back cleanly instead of leaving a malformed image (see LLM/033), without FULL's cost.
   db.exec('PRAGMA journal_mode = TRUNCATE');
   db.exec('PRAGMA synchronous = NORMAL');
   db.exec(LOCAL_TABLES_SQL); // local-only bookkeeping (not shipped in slices)
-  registerFunctions(); // evalJS() etc. — re-registered each open (functions are per-connection)
-  // Safety net: cancel a user query that runs past EXEC_TIMEOUT_MS so a pathological query (e.g. a cartesian
-  // self-join) can't wedge the single worker — which would also stall the viewer's own reads. The handler
-  // fires every ~10k VM steps; it only aborts while a user query is in flight (queryDeadline > 0).
+  registerFunctions(); // evalJS() etc.
+  // Cancel a user query that runs past EXEC_TIMEOUT_MS (fires every ~10k VM steps; only while a query is in flight).
   try {
     sqlite3.capi.sqlite3_progress_handler(db.pointer, 10000, () => (queryDeadline && Date.now() > queryDeadline ? 1 : 0), 0);
   } catch (e) {
     console.warn('[db] progress handler unavailable; user queries are not time-limited', e);
   }
+}
 
-  // 2. Reconcile against the published manifest (catalog refresh + prune; stale books re-merge lazily).
-  await reconcile(pool, fresh);
+// Open the connection and, the FIRST time this session, bring the cache current (migrate in place +
+// reconcile against the manifest). Self-heals a corrupt cache by wiping + re-streaming the catalog.
+async function bootSequence() {
+  if (booted) {
+    openConnection(); // re-acquire after a pause: just reopen, no re-reconcile
+    return;
+  }
+  try {
+    const fresh = !pool.getFileNames().includes(BOOT_PATH);
+    if (fresh) await streamInto(pool, BOOT_PATH, bootUrl);
+    openConnection();
+    if (!fresh) migrateContent();
+    await reconcile(pool, fresh);
+  } catch (e) {
+    if (!isCorrupt(e)) throw e;
+    console.warn('[db] content cache is corrupt — wiping and re-initializing fresh', e);
+    try {
+      db?.close();
+    } catch {
+      /* unusable */
+    }
+    await pool.wipeFiles();
+    await streamInto(pool, BOOT_PATH, bootUrl);
+    openConnection();
+    await reconcile(pool, true);
+  }
+  booted = true;
+}
+
+function clearIdle() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = null;
+}
+
+function scheduleIdleRelease() {
+  clearIdle();
+  if (releaseWanted) return releaseLease();
+  idleTimer = setTimeout(() => {
+    if (leaseDepth === 0) releaseLease();
+  }, LEASE_IDLE_MS);
+}
+
+// Drop the lease: close the db, pause the pool (releasing its OPFS handles), and free the Web Lock.
+function releaseLease() {
+  if (!leaseHeld || leaseDepth > 0) return;
+  clearIdle();
+  try {
+    db?.close();
+  } catch {
+    /* unusable */
+  }
+  db = undefined;
+  try {
+    pool?.pauseVfs(); // synchronous; releases the SyncAccessHandles
+  } catch (e) {
+    console.warn('[db] pauseVfs failed', e);
+  }
+  leaseHeld = false;
+  releaseWanted = false;
+  const free = releaseLock;
+  releaseLock = null;
+  free?.(); // resolve the lock callback → the next waiter (this or another tab) can acquire
+}
+
+// Acquire the lock and hold it (the request callback stays pending until releaseLock() is called).
+function startLease(): Promise<void> {
+  return new Promise<void>((acquired, failed) => {
+    navigator.locks
+      .request('torah-db', { mode: 'exclusive' }, () =>
+        new Promise<void>((free) => {
+          (async () => {
+            await ensurePool();
+            if (pool.isPaused()) await pool.unpauseVfs();
+            await bootSequence();
+            leaseHeld = true;
+            releaseLock = free;
+            acquired();
+          })().catch((e) => {
+            free(); // setup failed under the lock — release it so we don't wedge other tabs
+            failed(e);
+          });
+        })
+      )
+      .catch(failed); // the lock request itself failed (not the held callback)
+  });
+}
+
+async function withLease<T>(fn: () => Promise<T> | T): Promise<T> {
+  if (!leaseHeld) {
+    if (!acquiring) acquiring = startLease().finally(() => (acquiring = null));
+    await acquiring;
+  }
+  leaseDepth++;
+  clearIdle();
+  try {
+    return await fn();
+  } finally {
+    leaseDepth--;
+    if (leaseDepth === 0) scheduleIdleRelease();
+  }
+}
+
+// Self-heal a corrupt cache discovered mid-query, while we already hold the lease.
+async function wipeAndRebootInLease() {
+  try {
+    db?.close();
+  } catch {
+    /* unusable */
+  }
+  db = undefined;
+  booted = false;
+  await pool.wipeFiles();
+  await bootSequence();
 }
 
 // Upgrade an already-cached content DB in place, one step at a time. Each step is additive/cache-safe
@@ -438,13 +470,19 @@ function registerFunctions() {
 
 const api = {
   async version() {
-    const { sqlite3 } = await init;
+    await moduleReady;
     return sqlite3.version.libVersion;
+  },
+
+  /** Release the connection now (no-op if idle). Called by the page when it goes hidden/frozen so an
+   *  inactive tab holds no OPFS handles — making a reload, or another tab, acquire instantly. */
+  release() {
+    releaseWanted = true;
+    if (leaseDepth === 0) releaseLease();
   },
 
   /** Run SQL; returns rows as objects (empty for non-SELECT). */
   async exec(sql: string, params: unknown[] = []) {
-    await boot();
     const run = () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const resultRows: any[] = [];
@@ -460,91 +498,95 @@ const api = {
       }
       return resultRows;
     };
-    try {
-      return run();
-    } catch (e) {
-      if (!isCorrupt(e)) throw e;
-      console.warn('[db] query hit a corrupt cache — wiping, re-initializing, and retrying once', e);
-      await wipeAndReboot();
-      return run();
-    }
+    return withLease(async () => {
+      try {
+        return run();
+      } catch (e) {
+        if (!isCorrupt(e)) throw e;
+        console.warn('[db] query hit a corrupt cache — wiping, re-initializing, and retrying once', e);
+        await wipeAndRebootInLease();
+        return run();
+      }
+    });
   },
 
   /** Register plugin-supplied SQL functions (names already namespaced by the host). Bodies are pure JS. */
   async defineFunctions(specs: SqlFnSpec[]) {
-    await boot();
-    for (const s of specs) {
-      const i = pluginFnSpecs.findIndex((x) => x.name === s.name);
-      if (i >= 0) pluginFnSpecs[i] = s;
-      else pluginFnSpecs.push(s);
-      try {
-        registerPluginFn(s);
-      } catch (e) {
-        console.warn('[db] plugin fn failed:', s.name, e);
+    return withLease(() => {
+      for (const s of specs) {
+        const i = pluginFnSpecs.findIndex((x) => x.name === s.name);
+        if (i >= 0) pluginFnSpecs[i] = s;
+        else pluginFnSpecs.push(s);
+        try {
+          registerPluginFn(s);
+        } catch (e) {
+          console.warn('[db] plugin fn failed:', s.name, e);
+        }
       }
-    }
+    });
   },
 
   /** Ensure a book's content is local AND current: (re)merge its slice when missing or stale. */
   async ensureBook(tocId: string, onProgress?: (p: Progress) => void) {
-    const { pool } = await init;
-    await boot();
-    const want = scalar(`SELECT content_version FROM toc WHERE id = ?`, [tocId]);
-    const have = scalar(`SELECT content_version FROM book_state WHERE toc_id = ?`, [tocId]);
-    if (have != null && (want == null || have === want)) return; // present and current
-    if (want == null && Number(scalar(`SELECT COUNT(*) FROM content WHERE toc_id = ?`, [tocId])) > 0)
-      return; // no version info (offline/old catalog) but content is present → use it
-    const file = sliceUrlPath(tocId);
-    // Don't wrap this in corruption-recovery: a transiently bad slice would otherwise wipe ALL downloaded
-    // books. A genuinely corrupt main cache surfaces on the next boot/query, which self-heal (see exec/doBoot).
-    await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
+    return withLease(async () => {
+      const want = scalar(`SELECT content_version FROM toc WHERE id = ?`, [tocId]);
+      const have = scalar(`SELECT content_version FROM book_state WHERE toc_id = ?`, [tocId]);
+      if (have != null && (want == null || have === want)) return; // present and current
+      if (want == null && Number(scalar(`SELECT COUNT(*) FROM content WHERE toc_id = ?`, [tocId])) > 0)
+        return; // no version info (offline/old catalog) but content is present → use it
+      const file = sliceUrlPath(tocId);
+      // Don't wrap this in corruption-recovery: a transiently bad slice would otherwise wipe ALL downloaded
+      // books. A genuinely corrupt main cache surfaces on the next boot/query, which self-heal (see exec).
+      await mergeSlice(pool, tocId, `${dbBase}${file}`, `/${file}`, onProgress);
+    });
   },
 
   /** Remove one book's downloaded content (the catalog row stays). It can be re-downloaded later. */
   async clearBook(tocId: string) {
-    await boot();
-    db.exec('BEGIN');
-    try {
-      db.exec({ sql: `DELETE FROM editions   WHERE toc_id = ?`, bind: [tocId] });
-      db.exec({ sql: `DELETE FROM content    WHERE toc_id = ?`, bind: [tocId] });
-      db.exec({ sql: `DELETE FROM meta       WHERE toc_id = ?`, bind: [tocId] });
-      db.exec({ sql: `DELETE FROM links      WHERE from_id = ? OR to_id = ?`, bind: [tocId, tocId] });
-      db.exec({ sql: `DELETE FROM book_state WHERE toc_id = ?`, bind: [tocId] });
-      db.exec('COMMIT');
-    } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
-    }
+    return withLease(() => {
+      db.exec('BEGIN');
+      try {
+        db.exec({ sql: `DELETE FROM editions   WHERE toc_id = ?`, bind: [tocId] });
+        db.exec({ sql: `DELETE FROM content    WHERE toc_id = ?`, bind: [tocId] });
+        db.exec({ sql: `DELETE FROM meta       WHERE toc_id = ?`, bind: [tocId] });
+        db.exec({ sql: `DELETE FROM links      WHERE from_id = ? OR to_id = ?`, bind: [tocId, tocId] });
+        db.exec({ sql: `DELETE FROM book_state WHERE toc_id = ?`, bind: [tocId] });
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+    });
   },
 
   /** Table → column names, for the Code page's schema-aware autocomplete. */
   async schema(): Promise<Record<string, string[]>> {
-    await boot();
-    const tables = (rows(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`) as unknown[][]).map((r) => String(r[0]));
-    const out: Record<string, string[]> = {};
-    for (const t of tables) out[t] = (rows(`PRAGMA table_info("${t.replace(/"/g, '""')}")`) as unknown[][]).map((r) => String(r[1]));
-    return out;
+    return withLease(() => {
+      const tables = (rows(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`) as unknown[][]).map((r) => String(r[0]));
+      const out: Record<string, string[]> = {};
+      for (const t of tables) out[t] = (rows(`PRAGMA table_info("${t.replace(/"/g, '""')}")`) as unknown[][]).map((r) => String(r[1]));
+      return out;
+    });
   },
 
   /** Clear all local data — a manual recovery action (the button), never an automatic version wipe. */
   async wipe() {
-    const { pool } = await init;
-    if (db) {
-      db.close();
+    return withLease(async () => {
+      try {
+        db?.close();
+      } catch {
+        /* unusable */
+      }
       db = undefined;
-    }
-    bootP = null;
-    await pool.wipeFiles();
+      booted = false;
+      await pool.wipeFiles();
+      await bootSequence(); // re-open a fresh, empty store so subsequent calls work
+    });
   },
 };
 
-// The leader tab forwards one MessagePort per connecting tab; expose the API on each.
-self.onmessage = (event: MessageEvent) => {
-  if (event.data?.type === 'connect' && event.data.port) {
-    const port = event.data.port as MessagePort;
-    expose(api, port);
-    port.start();
-  }
-};
+// One dedicated worker per page (no SharedWorker broker): expose the API directly over the default
+// worker endpoint. The page coordinates SAH-pool ownership purely through the 'torah-db' Web Lock.
+expose(api);
 
 export type Api = typeof api;
