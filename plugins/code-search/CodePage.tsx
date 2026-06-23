@@ -7,7 +7,7 @@ import * as monacoEsm from 'monaco-editor/esm/vs/editor/editor.api';
 // @ts-ignore
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'; // SQL syntax only (avoids bundling every language)
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
-import { Button, Group, Text, Code, ScrollArea, Table, Select, Anchor } from '@mantine/core';
+import { Button, Group, Text, Code, ScrollArea, Table, Select, Anchor, Pagination } from '@mantine/core';
 import type { PluginContext } from '../../src/plugins/types';
 import { useSlot } from '../../src/plugins/host';
 import { CODE_PAGE_ID, type CellRenderer, type CodeSample } from './api';
@@ -161,9 +161,15 @@ LIMIT 25;`,
   },
 ];
 
+const PAGE_SIZE = 25;
 function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[]; ctx: PluginContext; renderers: Map<string, CellRenderer> }) {
   const cols = Object.keys(rows[0]);
   const text = (v: unknown) => stripHtml(v).slice(0, 200);
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [rows]); // a fresh query → back to page 1
+  const pageCount = Math.ceil(rows.length / PAGE_SIZE);
+  const start = (Math.min(page, pageCount) - 1) * PAGE_SIZE;
+  const pageRows = rows.slice(start, start + PAGE_SIZE);
 
   // A clickable link into the viewer. The href is real (URL shows in the status bar; cmd/ctrl/shift/middle
   // click opens a new tab); a plain left-click navigates in-app instead.
@@ -210,22 +216,32 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
   };
 
   return (
-    <ScrollArea mt="sm" mah={460} type="auto">
-      <Table striped withTableBorder stickyHeader fz="xs">
-        <Table.Thead>
-          <Table.Tr>{cols.map((c) => <Table.Th key={c}>{c}</Table.Th>)}</Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {rows.slice(0, 200).map((r, i) => (
-            <Table.Tr key={i}>
-              {cols.map((c) => (
-                <Table.Td key={c} style={decodeRender(r[c]) ? undefined : { maxWidth: 380 }}>{renderCell(r, c)}</Table.Td>
-              ))}
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-    </ScrollArea>
+    <>
+      {pageCount > 1 && (
+        <Group justify="space-between" mt="sm" mb={4}>
+          <Text size="xs" c="dimmed">
+            rows {start + 1}–{start + pageRows.length} of {rows.length}
+          </Text>
+          <Pagination size="xs" total={pageCount} value={Math.min(page, pageCount)} onChange={setPage} withEdges />
+        </Group>
+      )}
+      <ScrollArea mt={pageCount > 1 ? 0 : 'sm'} mah={600} type="auto">
+        <Table striped withTableBorder stickyHeader fz="xs">
+          <Table.Thead>
+            <Table.Tr>{cols.map((c) => <Table.Th key={c}>{c}</Table.Th>)}</Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {pageRows.map((r, i) => (
+              <Table.Tr key={start + i}>
+                {cols.map((c) => (
+                  <Table.Td key={c} style={decodeRender(r[c]) ? undefined : { maxWidth: 380 }}>{renderCell(r, c)}</Table.Td>
+                ))}
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </ScrollArea>
+    </>
   );
 }
 

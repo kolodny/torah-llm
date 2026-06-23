@@ -244,16 +244,35 @@ LIMIT 25;`,
     });
     code.registerSample({
       id: 'gematria:verse-equals-word',
-      label: 'A whole verse equal to a word — 376 (שלום / עשו)',
-      sql: `-- 376 = שָׁלוֹם (peace) = עֵשָׂו (Esau). The ONLY verse in the Torah whose ENTIRE gematria is 376 is the
--- climax of the Song of the Sea: Exodus 15:18 — יְהֹוָה יִמְלֹךְ לְעֹלָם וָעֶד. (gematria() ignores nikud/te'amim + HTML.)
--- Download the Torah books in Storage first; change 376 to 26 (יהוה), 611 (תורה), 358 (משיח)…
-SELECT c.toc_id, c.ref, gematria(c.text) AS gematria, substr(strip(c.text), 1, 60) AS verse
-FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy')
-  AND e.source = 'sefaria' AND e.lang = 'he' AND gematria(c.text) = 376
-GROUP BY c.toc_id, c.ref
-ORDER BY c.toc_id, c.ref;`,
+      label: 'Any verse whose gematria equals a single word',
+      sql: `-- Every verse whose ENTIRE gematria equals that of some single Hebrew word (an example is shown, drawn
+-- from anywhere in the Torah). e.g. the Shema (Deut 6:4); and Exodus 15:18 = שָׁלוֹם / עֵשָׂו (376). The verse
+-- total is usually large, so matches are weighted toward longer single words. gematria() ignores nikud/te'amim/HTML.
+-- Download the Torah books in Storage first. (Click a verse ref to open it; ORDER BY v.g for the smallest.)
+WITH RECURSIVE
+  src AS (
+    SELECT c.toc_id, c.ref, ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
+    FROM content c JOIN editions e ON e.id = c.edition_id
+    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  ),
+  words(toc_id, ref, word, rest) AS (
+    SELECT toc_id, ref, '', t FROM src
+    UNION ALL
+    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM words WHERE rest <> ''
+  ),
+  wval AS MATERIALIZED (          -- one example word per distinct gematria value
+    SELECT gematria(word) AS g, min(word) AS example FROM words WHERE word <> '' AND gematria(word) > 0 GROUP BY g
+  ),
+  verses AS MATERIALIZED (        -- each verse's total gematria
+    SELECT c.toc_id, c.ref, gematria(max(c.text)) AS g, substr(strip(max(c.text)), 1, 45) AS verse
+    FROM content c JOIN editions e ON e.id = c.edition_id
+    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+    GROUP BY c.toc_id, c.ref
+  )
+SELECT v.toc_id, v.ref, v.g AS gematria, wv.example AS equal_word, v.verse
+FROM verses v JOIN wval wv ON wv.g = v.g
+ORDER BY v.g DESC
+LIMIT 50;`,
     });
     code.registerSample({
       id: 'gematria:words-equal',
