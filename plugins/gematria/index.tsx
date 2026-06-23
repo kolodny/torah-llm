@@ -31,19 +31,16 @@ function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {
   const [hits, setHits] = useState<{ book: string; ref: string; text: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [ran, setRan] = useState(false);
-  const [highlighting, setHighlighting] = useState(false);
+  // Reflect any highlight that's already active globally, so navigating away to view it and coming back
+  // shows the "Clear highlight" button (the original bug was an orphaned highlight with no way to clear).
+  // We must NOT clear on unmount: the whole point is the highlight persists in the viewer after you click a hit.
+  const [highlighting, setHighlighting] = useState(highlightValue != null);
   const [localBooks, setLocalBooks] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     ctx.data.getToc().then(setToc).catch(() => {});
     // only downloaded books have content to search — flag them in the tree.
     ctx.data.query('SELECT DISTINCT toc_id AS id FROM content').then((r) => setLocalBooks(new Set(r.map((x) => x.id as string)))).catch(() => {});
-    // Clear any lingering global highlight when the page unmounts, so reopening it doesn't
-    // leave a stale highlight that the (now gone) "Clear highlight" button can't remove.
-    return () => {
-      highlightValue = null;
-      ctx.actions.emit('decorations.changed');
-    };
   }, [ctx]);
 
   const run = async (e?: FormEvent) => {

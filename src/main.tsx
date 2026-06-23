@@ -15,12 +15,18 @@ if (navigator.storage?.persist) {
       return true;
     });
   tryPersist();
-  // Browsers often deny persist() without a user gesture, so retry once on the first interaction.
+  // Browsers often deny persist() without a user gesture, so retry once on the first interaction. One shared
+  // handler that removes BOTH listeners on first fire, so persist is attempted at most once and none lingers.
+  let done = false;
   const onGesture = () => {
+    if (done) return;
+    done = true;
+    removeEventListener('pointerdown', onGesture);
+    removeEventListener('click', onGesture);
     tryPersist();
   };
-  addEventListener('pointerdown', onGesture, { once: true });
-  addEventListener('click', onGesture, { once: true });
+  addEventListener('pointerdown', onGesture);
+  addEventListener('click', onGesture);
 }
 
 const theme = createTheme({ primaryColor: 'orange', fontFamily: 'inherit' });

@@ -72,8 +72,10 @@ export type LinkInfo = { from: { book: string; ref: string }; to: { book: string
 /** An action attached to a link (viewer:linkAction). */
 export type LinkAction = Contribution & { label: string; icon?: ReactNode; when?(link: LinkInfo): boolean; run(link: LinkInfo): void };
 
-/** A rendered text segment, handed to decoration providers (offsets index `text`, the tag-stripped html). */
-export type Segment = { book: string; ref: string; editionId: string; lang: string; html: string; text: string };
+/** A rendered text segment, handed to decoration providers (offsets index `text`, the tag-stripped html).
+ *  `primary` is true for the first edition column rendering this ref — gate per-ref widgets (e.g. note pins)
+ *  on it to render once per verse rather than once per column. */
+export type Segment = { book: string; ref: string; editionId: string; lang: string; html: string; text: string; primary?: boolean };
 export type Decoration =
   | { kind: 'mark'; from: number; to: number; className?: string; title?: string; onClick?(event: MouseEvent, seg: Segment): void }
   | { kind: 'lineWidget'; render(seg: Segment): ReactNode };

@@ -24,14 +24,18 @@ const sanitize = (html: string) => DOMPurify.sanitize(html, { ADD_ATTR: ['data-r
  *  tag boundary is uncommon for word highlights, and DOMPurify normalizes any resulting nesting. */
 export function decorateHtml(html: string, marks: Mark[]): string {
   if (!marks.length) return html;
+  const plainLen = stripTags(html).length; // clamp offsets so an out-of-range `to` can't leave a <mark> unclosed
   const opensAt = new Map<number, string[]>();
   const closesAt = new Map<number, string[]>();
   marks.forEach((m, i) => {
+    const from = Math.max(0, Math.min(m.from, plainLen));
+    const to = Math.max(from, Math.min(m.to, plainLen));
+    if (to <= from) return; // skip empty / out-of-range ranges
     const open = `<mark class="${escapeAttr(m.className ?? 'deco-mark')}" data-deco="${i}"${
       m.title ? ` title="${escapeAttr(m.title)}"` : ''
     }>`;
-    (opensAt.get(m.from) ?? opensAt.set(m.from, []).get(m.from)!).push(open);
-    (closesAt.get(m.to) ?? closesAt.set(m.to, []).get(m.to)!).push('</mark>');
+    (opensAt.get(from) ?? opensAt.set(from, []).get(from)!).push(open);
+    (closesAt.get(to) ?? closesAt.set(to, []).get(to)!).push('</mark>');
   });
   let out = '';
   let plain = 0;
@@ -65,6 +69,7 @@ export function SegmentText({
   html,
   className,
   dir,
+  primary = true,
 }: {
   book: string;
   segRef: string;
@@ -73,12 +78,15 @@ export function SegmentText({
   html: string;
   className: string;
   dir: 'rtl' | 'ltr';
+  /** True for the FIRST column rendering this ref (default). Per-ref decorations (e.g. note pins) gate on
+   *  this so they render once per verse instead of once per edition column / tied to the volatile selection. */
+  primary?: boolean;
 }) {
   const decorationProviders = useSlot<DecorationProvider>('viewer', 'decoration');
   const tick = useDecorationsTick();
   const seg = useMemo<Segment>(
-    () => ({ book, ref: segRef, editionId, lang, html, text: stripTags(html) }),
-    [book, segRef, editionId, lang, html]
+    () => ({ book, ref: segRef, editionId, lang, html, text: stripTags(html), primary }),
+    [book, segRef, editionId, lang, html, primary]
   );
   const decos = useMemo(
     () =>

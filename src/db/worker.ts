@@ -323,6 +323,13 @@ async function reconcile(pool: any, fresh: boolean) {
     return; // offline → keep using the cached catalog
   }
   if (!manifest?.publishId) return;
+  // A publish that ships a newer content-schema than this app understands would feed us a
+  // catalog/slices we can't handle → corruption. Keep using the current cached catalog and wait
+  // for the app itself to update on reload.
+  if (manifest.schemaVersion != null && manifest.schemaVersion > BOOT_VERSION) {
+    console.warn(`published content schema v${manifest.schemaVersion} is newer than this app (BOOT_VERSION v${BOOT_VERSION}) — skipping catalog refresh; reload to update the app`);
+    return;
+  }
   // Fresh boot DB already IS this manifest's snapshot — just record which publish we hold.
   if (fresh) {
     setPublishId(manifest.publishId);

@@ -216,6 +216,13 @@ function contextFor(manifest: PluginManifest): PluginContext {
       },
       onDidChange: (fn) => {
         readerSubs.add(fn);
+        // Deliver the current context once to a late subscriber (added after the reader already has a book), so
+        // it isn't stuck until the next change. Future setReader() calls still fire fn with their new value.
+        try {
+          fn(currentReader);
+        } catch (e) {
+          console.error(`[plugins] "${manifest.id}" reader.onDidChange initial call threw:`, e);
+        }
         return track({ dispose: () => void readerSubs.delete(fn) });
       },
     },

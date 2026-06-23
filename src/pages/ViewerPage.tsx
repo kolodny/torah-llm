@@ -297,9 +297,11 @@ export default function ViewerPage() {
     setDownloading('…');
     try {
       await ensureBook(book, (p) => setDownloading(p.total ? `${Math.round((p.received / p.total) * 100)}%` : `${(p.received / 1e6).toFixed(1)} MB`));
-      setNotLocal(false);
       const r = await loadBookSkeleton(book);
-      if (bookRef.current === book) applySkeleton(r);
+      if (bookRef.current === book) {
+        setNotLocal(false);
+        applySkeleton(r);
+      }
       await refreshLocal();
     } catch (e) {
       setError(String(e));
@@ -768,7 +770,9 @@ function Verses({ rows, editions, selected, links, sections, bookTotals }: { row
   return (
     <div className="verses" onClick={onRefClick}>
       <p className="muted" data-testid="verse-count">
-        {bookTotals ? `${bookTotals.verses} verses · ${bookTotals.sections} chapters` : `${chapters.byRef.size} verses · ${chapters.grouped.length} chapters`}
+        {bookTotals
+          ? `${bookTotals.verses} verses · ${bookTotals.sections} ${(sections[0] ?? 'chapter').toLowerCase()}${bookTotals.sections === 1 ? '' : 's'}`
+          : `${chapters.byRef.size} verses · ${chapters.grouped.length} chapters`}
         {!selected.length && ' · add an edition above'}
         {standaloneIds.length > 0 && ` · ${standaloneIds.length} shown separately (different segmentation)`}
       </p>
@@ -784,9 +788,9 @@ function Verses({ rows, editions, selected, links, sections, bookTotals }: { row
                 <VerseMenu verse={{ book, ref: r, texts, editions }} />
                 <div className="vbody">
                   <div className="cols" style={{ ['--cols' as string]: gridIds.length || 1 }}>
-                    {gridIds.map((id) => {
+                    {gridIds.map((id, ci) => {
                       const he = RTL_LANGS.has(langOf.get(id) ?? '');
-                      return <SegmentText key={id} book={book} segRef={r} editionId={id} lang={langOf.get(id) ?? ''} html={texts[id] ?? ''} className={`col ${he ? 'he' : 'en'}`} dir={he ? 'rtl' : 'ltr'} />;
+                      return <SegmentText key={id} book={book} segRef={r} editionId={id} lang={langOf.get(id) ?? ''} html={texts[id] ?? ''} className={`col ${he ? 'he' : 'en'}`} dir={he ? 'rtl' : 'ltr'} primary={ci === 0} />;
                     })}
                   </div>
                   {vlinks?.length ? <VerseLinks links={vlinks} refTag={r} book={book} /> : null}
@@ -993,7 +997,7 @@ function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
         {!st.loading && !st.local && (
           <Paper withBorder p="md" radius="sm">
             <p className="muted" style={{ marginTop: 0 }}>“{book}” isn’t downloaded.</p>
-            <Button size="xs" color="orange" onClick={() => ensureBook(book).then(load)}>Download to preview</Button>
+            <Button size="xs" color="orange" onClick={() => ensureBook(book).then(load).catch((e) => setSt((s) => ({ ...s, error: String(e) })))}>Download to preview</Button>
           </Paper>
         )}
         {!st.loading && st.local && !st.error && shownEds.length === 0 && <p className="muted">No text for this reference.</p>}
@@ -1015,7 +1019,10 @@ function PeekPanel({ book, refTag }: { book: string; refTag: string | null }) {
 // === continuous (Flow) reader =================================================================
 function ContinuousReader({ view }: { view: BookView }) {
   const { content, editions, reader } = view;
-  const primary = reader.selected[0];
+  // Read the first SELECTED edition that actually has text in the loaded window — otherwise picking an
+  // edition with no rows here (e.g. an English-only selection on a Hebrew-only section) shows a blank page.
+  const withText = new Set((content ?? []).map((r) => r.edition_id));
+  const primary = reader.selected.find((id) => withText.has(id)) ?? reader.selected[0];
   const ed = editions.find((e) => e.id === primary);
   const rtl = ed ? RTL_LANGS.has(ed.lang) : false;
   const chapters = useMemo(() => {

@@ -167,11 +167,11 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
     ctx.data
       .query(
         `SELECT other AS id, connection_type AS type, COUNT(*) AS count FROM (
-           SELECT to_id AS other, connection_type FROM links WHERE from_id = ?
+           SELECT to_id AS other, connection_type FROM links WHERE from_id = ? AND to_id <> ?
            UNION ALL
-           SELECT from_id AS other, connection_type FROM links WHERE to_id = ?
+           SELECT from_id AS other, connection_type FROM links WHERE to_id = ? AND from_id <> ?
          ) GROUP BY other, connection_type`,
-        [book, book]
+        [book, book, book, book]
       )
       .then((rows) => {
         if (cancelled) return;
@@ -194,11 +194,13 @@ function MikraotGedolot({ view, ctx }: { view: BookView; ctx: PluginContext }) {
     };
   }, [book, ctx]);
 
+  // Focus index. Sync to the URL ref when present; otherwise (and when the ref isn't in this book — e.g.
+  // after a book switch where the catalog opens with no ref) reset to the first verse rather than keeping a
+  // stale index that would clamp to the (wrong) last verse of the new book.
   const [idx, setIdx] = useState(0);
   useEffect(() => {
-    if (!view.reader.ref) return;
-    const i = verses.indexOf(view.reader.ref);
-    if (i >= 0) setIdx(i);
+    const i = view.reader.ref ? verses.indexOf(view.reader.ref) : -1;
+    setIdx(i >= 0 ? i : 0);
   }, [view.reader.ref, verses]);
   const ref = verses[Math.min(idx, verses.length - 1)] ?? '';
 

@@ -12,6 +12,7 @@ export default function StoragePage() {
   const [local, setLocal] = useState<Set<string>>(new Set());
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<{ done: number; total: number; label: string } | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
 
   // Refresh the "what's actually local" set. `syncChecked` also resets the desired-state checkboxes to match
   // (used on first load); a run in flight passes false so it preserves any checkbox edits the user made while
@@ -37,16 +38,23 @@ export default function StoragePage() {
   const run = useCallback(
     async (ids: string[], op: (id: string) => Promise<void>, verb: string) => {
       setBusy({ done: 0, total: ids.length, label: verb });
+      setRunError(null);
+      const failed: { id: string; err: string }[] = [];
       for (let i = 0; i < ids.length; i++) {
-        setBusy({ done: i, total: ids.length, label: `${verb} ${byId.get(ids[i])?.title_en ?? ids[i]}` });
+        setBusy({ done: i + 1, total: ids.length, label: `${verb} ${byId.get(ids[i])?.title_en ?? ids[i]}` });
         try {
           await op(ids[i]);
         } catch (e) {
           console.error(`[storage] ${verb} ${ids[i]} failed:`, e);
+          failed.push({ id: ids[i], err: e instanceof Error ? e.message : String(e) });
         }
       }
       await refreshLocal();
       setBusy(null);
+      if (failed.length) {
+        const names = failed.map((f) => byId.get(f.id)?.title_en ?? f.id);
+        setRunError(`${failed.length} of ${ids.length} failed (${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}): ${failed[0].err}`);
+      }
     },
     [byId, refreshLocal]
   );
@@ -79,6 +87,7 @@ export default function StoragePage() {
             <Progress value={busy.total ? (busy.done / busy.total) * 100 : 0} color="orange" mt={4} />
           </div>
         )}
+        {runError && <Text size="sm" c="red">{runError}</Text>}
       </Stack>
 
       <ScrollArea className="storage-tree">

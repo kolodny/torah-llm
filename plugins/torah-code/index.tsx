@@ -92,7 +92,8 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
     Promise.all(
       books.map((b) =>
         ctx.data.query(
-          'SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id WHERE c.toc_id = ? AND e.lang = ? AND e.source = ? ORDER BY c.id',
+          // ORDER BY c.ref = reading order; local content ids are reassigned on each merge, so id order is unstable.
+          'SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id WHERE c.toc_id = ? AND e.lang = ? AND e.source = ? ORDER BY c.ref',
           [b, 'he', 'sefaria']
         )
       )
@@ -174,6 +175,10 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
     if (cells.length) grid.push({ label: `${cells[0].book} ${cells[0].ref}`, cells }); // book + verse the row starts in
   }
 
+  // start/skip/length point outside the letter stream → nothing to draw. Show a note, not a blank matrix.
+  if (!code.length || !grid.length)
+    return <Text size="sm" c="dimmed" dir="auto">Torah code: no letters at this start/skip — check the range ({corpusLabel} · start {start} · skip {skip} · {letters.length} letters).</Text>;
+
   return (
     <div className="torah-code">
       <Text size="sm" mb={4}>
@@ -233,9 +238,11 @@ export default definePlugin({
 -- handle) to draw it (no second search), and json_extract it for the number. Click any letter to open its verse.
 SELECT json_extract(f, '$.skip') AS skip,
        render('torah-code', 'Genesis', f) AS matrix
-FROM (SELECT torah_code_find(group_concat(c.text, ''), 'תורה', 5000, 50) AS f FROM (
-        SELECT c.text FROM content c JOIN editions e ON e.id = c.edition_id
-        WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he' ORDER BY c.id) c);`,
+-- group_concat ORDER BY c.ref: SQLite doesn't guarantee aggregate order otherwise, and verse ref order is the
+-- reading order (local content ids are reassigned on each merge, so id order is unstable).
+FROM (SELECT torah_code_find(group_concat(c.text, '' ORDER BY c.ref), 'תורה', 5000, 50) AS f FROM (
+        SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id
+        WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he') c);`,
     });
     code.registerSample({
       id: 'torah-code:cross',

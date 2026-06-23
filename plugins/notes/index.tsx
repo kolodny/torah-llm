@@ -89,7 +89,7 @@ export default definePlugin({
     ctx.contribute('viewer', 'decoration', {
       id: 'notes.pins',
       provide: (seg: Segment): Decoration[] => {
-        if (seg.editionId !== ctx.reader.current.selected[0]) return [];
+        if (seg.primary === false) return []; // render the pin once per verse (on the first column), not per edition
         const k = `${seg.book} ${seg.ref}`;
         if (!noteRefs.has(k)) return [];
         return [{ kind: 'lineWidget', render: () => <button type="button" className="note-pin" onClick={() => ctx.ui.showToast(noteByRef.get(k) ?? 'Note')}>📝 note</button> }];

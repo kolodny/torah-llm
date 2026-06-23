@@ -33,7 +33,12 @@ function Shell() {
   const { state, dispatch } = useWorkbench();
   const pages = usePages();
   const active = pages.find((p) => p.id === state.page) ?? pages[0] ?? null;
-  const wipeDb = () => void wipe().then(() => location.reload());
+  const wipeDb = () => {
+    if (!window.confirm('Delete all downloaded books and local data? This cannot be undone.')) return;
+    void wipe()
+      .then(() => location.reload())
+      .catch((e) => dispatch({ type: 'toast', message: `Wipe failed: ${e instanceof Error ? e.message : String(e)}` }));
+  };
   return (
     <AppShell header={{ height: 56 }} padding={0}>
       <AppShell.Header>
