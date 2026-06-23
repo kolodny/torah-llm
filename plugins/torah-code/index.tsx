@@ -230,27 +230,28 @@ export default definePlugin({
     code.registerFns([{ name: 'find', args: ['text', 'word', 'maxSkip', 'minSkip'], body: FIND_BODY }]);
     code.registerRenderer({ id: 'torah-code', render: (a: unknown[]) => <TorahCodeMatrix args={a} ctx={ctx} /> });
     code.registerSample({
-      id: 'torah-code:find',
-      label: 'Torah code — תורה (skip 50, spans Genesis 1:1–1:5)',
-      sql: `-- The famous Genesis ELS: from the first letter ת, skipping 50 spells תורה across four verses (1:1, 1:2,
--- 1:4, 1:5). torah_code_find(text, word, maxSkip, minSkip) searches ONCE — minSkip 50 skips the trivial
--- closely-spaced hits — and returns a handle {start, skip, len}. Feed the handle to render('torah-code', book,
--- handle) to draw it (no second search), and json_extract it for the number. Click any letter to open its verse.
-SELECT json_extract(f, '$.skip') AS skip,
-       render('torah-code', 'Genesis', f) AS matrix
--- group_concat ORDER BY c.ref: SQLite doesn't guarantee aggregate order otherwise, and verse ref order is the
--- reading order (local content ids are reassigned on each merge, so id order is unstable).
-FROM (SELECT torah_code_find(group_concat(c.text, '' ORDER BY c.ref), 'תורה', 5000, 50) AS f FROM (
-        SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id
-        WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he') c);`,
+      id: 'torah-code:torah',
+      label: 'Torah code — תורה hidden at skip 50 in Genesis',
+      sql: `-- The classic "skip 50" Torah code (Rabbeinu Bachya / the Vilna Gaon): תורה appears as an equidistant-letter
+-- sequence in Genesis. torah_code_find returns the smallest-skip ELS of תורה with skip ≥ 50 as a {start,skip,len}
+-- handle; render() draws it (no second search) and each letter links to the verse it sits in. (Exodus hides תורה
+-- too; Numbers & Deuteronomy hide its mirror הרות.) group_concat ORDER BY c.ref = reading order.
+SELECT json_extract(f, '$.skip') AS skip, render('torah-code', 'Genesis', f) AS matrix
+FROM (SELECT torah_code_find(group_concat(c.text, '' ORDER BY c.ref), 'תורה', 5000, 50) AS f
+      FROM (SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id
+            WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he') c);`,
     });
     code.registerSample({
-      id: 'torah-code:cross',
-      label: 'Torah code — תורה across the Genesis–Exodus seam',
-      sql: `-- Books are read as ONE continuous letter stream, so an ELS skip flows across book lines. Here תורה is
--- spelled every 39 letters from the end of Genesis (50:25, 50:26) into the start of Exodus (1:1, 1:2). Each row
--- is labelled with its own book + verse; click a letter to open it. (Needs Genesis + Exodus downloaded.)
-SELECT render('torah-code', 'Genesis,Exodus,Leviticus,Numbers,Deuteronomy', 78309, 39, 4) AS torah_genesis_to_exodus;`,
+      id: 'torah-code:find',
+      label: 'Torah code — find an ELS of any word',
+      sql: `-- Search Genesis for an equidistant-letter sequence (ELS) of ANY word — change 'אברהם' below (try a name:
+-- 'משה', 'דוד', 'יוסף'…). torah_code_find(text, word, maxSkip, minSkip) returns the smallest-skip hit as a
+-- {start, skip, len} handle (or NULL); render() draws it without re-searching, json_extract reads the skip.
+-- group_concat ORDER BY c.ref keeps the letters in reading order (local row ids are unstable across merges).
+SELECT json_extract(f, '$.skip') AS skip, render('torah-code', 'Genesis', f) AS matrix
+FROM (SELECT torah_code_find(group_concat(c.text, '' ORDER BY c.ref), 'אברהם', 1000, 2) AS f
+      FROM (SELECT c.ref AS ref, c.text AS text FROM content c JOIN editions e ON e.id = c.edition_id
+            WHERE c.toc_id = 'Genesis' AND e.source = 'sefaria' AND e.lang = 'he') c);`,
     });
   },
 });

@@ -117,40 +117,6 @@ ORDER BY toc_id, ref
 LIMIT 50;`,
   },
   {
-    label: 'Verses with a doubled word (צדק צדק, אברהם אברהם)',
-    sql: `-- Consecutive identical words — a phenomenon the commentators dwell on: אַבְרָהָם אַבְרָהָם (Gen 22:11) and
--- מֹשֶׁה מֹשֶׁה (Exod 3:4) at moments of calling; צֶדֶק צֶדֶק תִּרְדֹּף "justice, justice shall you pursue" (Deut 16:20);
--- the Thirteen Attributes יְהֹוָה ׀ יְהֹוָה (Exod 34:6). Split each verse into words, reduce each to its CONSONANT
--- skeleton (so differing cantillation / a separating paseq don't matter), then keep verses where one word's
--- skeleton equals the next word's.
-WITH RECURSIVE
-  src AS (
-    SELECT c.toc_id, c.ref, ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
-    FROM content c JOIN editions e ON e.id = c.edition_id
-    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  ),
-  w(toc_id, ref, k, word, rest) AS (
-    SELECT toc_id, ref, 0, '', t FROM src
-    UNION ALL
-    SELECT toc_id, ref, k + 1, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM w WHERE rest <> ''
-  ),
-  toks(toc_id, ref, n, word) AS (              -- number the non-empty words 1,2,3,… per verse (skips paseq gaps)
-    SELECT toc_id, ref, ROW_NUMBER() OVER (PARTITION BY toc_id, ref ORDER BY k), word FROM w WHERE word <> ''
-  ),
-  ltr(toc_id, ref, n, word, i, skel) AS (      -- accumulate each word's letters only (drop nikud + te'amim)
-    SELECT toc_id, ref, n, word, 0, '' FROM toks
-    UNION ALL
-    SELECT toc_id, ref, n, word, i + 1,
-           skel || CASE WHEN unicode(substr(word, i + 1, 1)) BETWEEN 0x05D0 AND 0x05EA THEN substr(word, i + 1, 1) ELSE '' END
-    FROM ltr WHERE i < length(word)
-  ),
-  sk(toc_id, ref, n, s) AS (SELECT toc_id, ref, n, max(skel) FROM ltr GROUP BY toc_id, ref, n)
-SELECT a.toc_id, a.ref, a.s AS doubled_word
-FROM sk a JOIN sk b ON a.toc_id = b.toc_id AND a.ref = b.ref AND b.n = a.n + 1 AND a.s = b.s AND length(a.s) >= 2
-ORDER BY a.toc_id, a.ref
-LIMIT 50;`,
-  },
-  {
     label: 'The most-referenced verses (cross-reference graph)',
     sql: `-- The verses the tradition refers to most — ranked by how many cross-references (commentary, targum,
 -- midrash, quotation…) touch them. Genesis 1:1 leads by far. Counts reflect the books you've DOWNLOADED.
@@ -182,46 +148,25 @@ LIMIT 50;`,
   },
   {
     label: 'Genesis 1:1 — seven words and twenty-eight letters',
-    sql: `-- Chazal note the Torah opens with SEVEN words and TWENTY-EIGHT letters (28 = כֹּחַ, "strength"). Verify both:
--- split the verse into words, and explode it into characters counting only the Hebrew letters (U+05D0–U+05EA).
-WITH RECURSIVE
-  v AS (
-    SELECT strip(c.text) AS t FROM content c JOIN editions e ON e.id = c.edition_id
-    WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang = 'he' LIMIT 1
-  ),
-  words(word, rest) AS (
-    SELECT '', ' ' || replace(replace((SELECT t FROM v), MAQAF(), ' '), PASEQ(), ' ') || ' '
-    UNION ALL
-    SELECT substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM words WHERE rest <> ''
-  ),
-  chars(i, cp) AS (
-    SELECT 1, unicode((SELECT t FROM v))
-    UNION ALL
-    SELECT i + 1, unicode(substr((SELECT t FROM v), i + 1, 1)) FROM chars WHERE i < (SELECT length(t) FROM v)
-  )
-SELECT (SELECT count(*) FROM words WHERE word <> '') AS words,
-       (SELECT count(*) FROM chars WHERE cp BETWEEN 0x05D0 AND 0x05EA) AS letters;`,
+    sql: `-- Chazal note the Torah opens with SEVEN words and TWENTY-EIGHT letters (28 = כֹּחַ, "strength"). evalJS runs a
+-- JS expression per row — \`value\` is the cell and strip() removes HTML — and JS regex makes both counts a
+-- one-liner (SQLite has no regex): \\s+ splits words; [\\u05D0-\\u05EA] is the Hebrew-letter range (no vowels/te'amim).
+SELECT evalJS('strip(value).trim().split(/\\s+/).length', c.text) AS words,
+       evalJS('(strip(value).match(/[\\u05D0-\\u05EA]/g) || []).length', c.text) AS letters
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang = 'he';`,
   },
   {
-    label: 'The longest verses (by word count)',
-    sql: `-- Trivia: the Torah's longest verses by word count. (In all of Tanakh the longest is Esther 8:9 — 43 words.)
--- Split each verse on space / maqaf / paseq and count the words; the covenant + census verses dominate.
-WITH RECURSIVE
-  src AS (
-    SELECT c.toc_id, c.ref, max(' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ') AS t
-    FROM content c JOIN editions e ON e.id = c.edition_id
-    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-    GROUP BY c.toc_id, c.ref
-  ),
-  w(toc_id, ref, word, rest) AS (
-    SELECT toc_id, ref, '', t FROM src
-    UNION ALL
-    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM w WHERE rest <> ''
-  )
-SELECT toc_id, ref, count(*) AS words
-FROM w WHERE word <> ''
-GROUP BY toc_id, ref
-ORDER BY words DESC
+    label: 'The longest chapters (by verse count)',
+    sql: `-- Trivia: Numbers 7 (Naso — the twelve princes' offerings) is the longest chapter in the Torah at 89 verses.
+-- ref is "chapter:verse", so take the part before the ':' as the chapter and count the distinct verses.
+SELECT c.toc_id,
+       CAST(substr(c.ref, 1, instr(c.ref, ':') - 1) AS INTEGER) AS chapter,
+       count(DISTINCT c.ref) AS verses
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he' AND instr(c.ref, ':') > 0
+GROUP BY c.toc_id, chapter
+ORDER BY verses DESC
 LIMIT 25;`,
   },
   {
