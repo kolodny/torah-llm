@@ -140,11 +140,18 @@ function readOnlyQuery(sql: string, params?: unknown[]): Promise<Record<string, 
   if (!/^(?:SELECT|WITH|PRAGMA|EXPLAIN)\b/i.test(head)) {
     return Promise.reject(new Error(`query() is read-only (SELECT/WITH/PRAGMA/EXPLAIN only) — refused: ${head.slice(0, 50)}`));
   }
-  // Reject multi-statement SQL (e.g. `SELECT 1; DELETE FROM content`): trim, drop a single trailing
-  // semicolon, then refuse if any `;` remains — a sign the body holds more than one statement.
-  const body = head.trim().replace(/;\s*$/, '');
+  // Reject multi-statement SQL (e.g. `SELECT 1; DELETE FROM content`). Blank out comments + string/quoted-
+  // identifier literals FIRST so a `;` inside a comment or a string literal isn't mistaken for a second
+  // statement, then refuse if a `;` remains anywhere but the very end.
+  const body = sql
+    .replace(/--[^\n]*/g, ' ') // line comments
+    .replace(/\/\*[\s\S]*?\*\//g, ' ') // block comments
+    .replace(/'(?:[^']|'')*'/g, "''") // string literals
+    .replace(/"(?:[^"]|"")*"/g, '""') // quoted identifiers
+    .trim()
+    .replace(/;\s*$/, '');
   if (body.includes(';')) {
-    return Promise.reject(new Error(`query() allows a single statement only — refused: ${body.slice(0, 50)}`));
+    return Promise.reject(new Error(`query() allows a single statement only — refused: ${head.slice(0, 50)}`));
   }
   return dbQuery(sql, params);
 }

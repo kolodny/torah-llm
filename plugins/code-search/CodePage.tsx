@@ -96,7 +96,7 @@ WITH RECURSIVE
     SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1)
     FROM words WHERE rest <> ''
   )
--- one row per verse (the first such word); the qualifying set is small — the Decalogue + a couple of Genesis verses.
+-- one row per verse (the first such word) — the qualifying set is small (the Decalogue + a few Genesis verses).
 SELECT toc_id, ref, min(word) AS word FROM words
 WHERE word <> ''
   AND ( (instr(word, ETNAHTA()) > 0)    + (instr(word, SEGOLTA()) > 0)  + (instr(word, SHALSHELET()) > 0)
