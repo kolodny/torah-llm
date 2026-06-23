@@ -151,6 +151,80 @@ ORDER BY a.toc_id, a.ref
 LIMIT 50;`,
   },
   {
+    label: 'The most-referenced verses (cross-reference graph)',
+    sql: `-- The verses the tradition refers to most — ranked by how many cross-references (commentary, targum,
+-- midrash, quotation…) touch them. Genesis 1:1 leads by far. Counts reflect the books you've DOWNLOADED.
+-- The links table is stored undirected, so we count a verse on BOTH endpoints. Click a ref to open it.
+WITH ep AS (
+  SELECT from_id AS book, from_ref AS ref FROM links
+  UNION ALL
+  SELECT to_id, to_ref FROM links
+)
+SELECT book AS toc_id, ref, count(*) AS link_count
+FROM ep
+WHERE book IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy')
+GROUP BY book, ref
+ORDER BY link_count DESC
+LIMIT 50;`,
+  },
+  {
+    label: 'The Torah’s most-repeated verses (word-for-word)',
+    sql: `-- Verses that recur identically. וַיְדַבֵּר יְהֹוָה אֶל מֹשֶׁה לֵּאמֹר appears ~69 times; in Numbers 7 each line of
+-- the twelve princes' offering repeats 12× (one per tribe — why the Torah spells out all twelve identically is
+-- a classic question of the meforshim). Grouping on the exact text — nikud + te'amim must match too.
+SELECT count(*) AS times, substr(strip(min(c.text)), 1, 55) AS verse
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+GROUP BY strip(c.text)
+HAVING times >= 3
+ORDER BY times DESC
+LIMIT 50;`,
+  },
+  {
+    label: 'Genesis 1:1 — seven words and twenty-eight letters',
+    sql: `-- Chazal note the Torah opens with SEVEN words and TWENTY-EIGHT letters (28 = כֹּחַ, "strength"). Verify both:
+-- split the verse into words, and explode it into characters counting only the Hebrew letters (U+05D0–U+05EA).
+WITH RECURSIVE
+  v AS (
+    SELECT strip(c.text) AS t FROM content c JOIN editions e ON e.id = c.edition_id
+    WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang = 'he' LIMIT 1
+  ),
+  words(word, rest) AS (
+    SELECT '', ' ' || replace(replace((SELECT t FROM v), MAQAF(), ' '), PASEQ(), ' ') || ' '
+    UNION ALL
+    SELECT substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM words WHERE rest <> ''
+  ),
+  chars(i, cp) AS (
+    SELECT 1, unicode((SELECT t FROM v))
+    UNION ALL
+    SELECT i + 1, unicode(substr((SELECT t FROM v), i + 1, 1)) FROM chars WHERE i < (SELECT length(t) FROM v)
+  )
+SELECT (SELECT count(*) FROM words WHERE word <> '') AS words,
+       (SELECT count(*) FROM chars WHERE cp BETWEEN 0x05D0 AND 0x05EA) AS letters;`,
+  },
+  {
+    label: 'The longest verses (by word count)',
+    sql: `-- Trivia: the Torah's longest verses by word count. (In all of Tanakh the longest is Esther 8:9 — 43 words.)
+-- Split each verse on space / maqaf / paseq and count the words; the covenant + census verses dominate.
+WITH RECURSIVE
+  src AS (
+    SELECT c.toc_id, c.ref, max(' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ') AS t
+    FROM content c JOIN editions e ON e.id = c.edition_id
+    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+    GROUP BY c.toc_id, c.ref
+  ),
+  w(toc_id, ref, word, rest) AS (
+    SELECT toc_id, ref, '', t FROM src
+    UNION ALL
+    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1) FROM w WHERE rest <> ''
+  )
+SELECT toc_id, ref, count(*) AS words
+FROM w WHERE word <> ''
+GROUP BY toc_id, ref
+ORDER BY words DESC
+LIMIT 25;`,
+  },
+  {
     label: 'Largest downloaded books (by verse count)',
     sql: `-- Which downloaded books have the most segments?
 SELECT toc_id, COUNT(DISTINCT ref) AS verses
