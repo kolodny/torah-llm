@@ -77,29 +77,39 @@ LIMIT 25;`,
   },
   {
     label: 'A word with two cantillation marks (Torah)',
-    sql: `-- Words with two distinct DISJUNCTIVE te'amim — the famous double-cantillation cases: the Ten
--- Commandments' dual ta'am elyon/taḥton (Exodus 20, Deuteronomy 5) and the Reuben pisḳa (Genesis 35:22).
--- evalJS returns the first word that carries two distinct disjunctive accents — dropping the conjunctive
--- "servants" and counting zinor as zarqa, so servant+disjunctive / doubled / positional pairs don't count.
-SELECT * FROM (
-  SELECT c.toc_id, c.ref, evalJS('(function () {
-    var CONJUNCTIVES = new Set([0x5A3, 0x5A4, 0x5A5, 0x5A6, 0x5A7, 0x5A8, 0x5A9, 0x5AA]);  // meshartim (servants)
-    var words = value.replace(/&(?:[a-z0-9]+|#\\d+);/gi, " ")   // HTML spacing entities -> space
-                     .split(/[\\s\\u05be\\u05c0]+/);            // split on space, maqaf, paseq
-    return words.find(function (w) {
-      var accents = new Set();
-      for (var i = 0; i < w.length; i++) {
-        var cp = w.charCodeAt(i);
-        if (cp >= 0x591 && cp <= 0x5AE && !CONJUNCTIVES.has(cp)) accents.add(cp === 0x5AE ? 0x598 : cp);
-      }
-      return accents.size >= 2;
-    }) || null;
-  })()', strip(c.text)) AS word
-  FROM content c JOIN editions e ON e.id = c.edition_id
-  WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-)
-WHERE word IS NOT NULL
-LIMIT 25;`,
+    sql: `-- The famous "double-cantillation" words: the Ten Commandments' dual ta'am elyon/taḥton (Exodus 20,
+-- Deuteronomy 5) and the Reuben pisḳa (Genesis 35:22) — a single word carrying two accent systems at once.
+-- Pure SQL, no evalJS: a recursive CTE splits each Hebrew verse into words (on space / maqaf / paseq), then
+-- we count DISTINCT disjunctive te'amim per word using the Hebrew-name char functions. Conjunctive
+-- "servants" (munaḥ…yeraḥ ben yomo) are excluded, and zinor counts as zarqa, so an ordinary
+-- servant+disjunctive pair doesn't qualify — only a genuine two-disjunctive word does.
+WITH RECURSIVE
+  src AS (
+    SELECT c.toc_id, c.ref,
+           ' ' || replace(replace(strip(c.text), MAQAF(), ' '), PASEQ(), ' ') || ' ' AS t
+    FROM content c JOIN editions e ON e.id = c.edition_id
+    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  ),
+  words(toc_id, ref, word, rest) AS (
+    SELECT toc_id, ref, '', t FROM src
+    UNION ALL
+    SELECT toc_id, ref, substr(rest, 1, instr(rest, ' ') - 1), substr(rest, instr(rest, ' ') + 1)
+    FROM words WHERE rest <> ''
+  )
+-- one row per verse (the first such word); the qualifying set is small — the Decalogue + a couple of Genesis verses.
+SELECT toc_id, ref, min(word) AS word FROM words
+WHERE word <> ''
+  AND ( (instr(word, ETNAHTA()) > 0)    + (instr(word, SEGOLTA()) > 0)  + (instr(word, SHALSHELET()) > 0)
+      + (instr(word, ZAQEF_QATAN()) > 0)+ (instr(word, ZAQEF_GADOL()) > 0) + (instr(word, TIPEHA()) > 0)
+      + (instr(word, REVIA()) > 0)      + (instr(word, PASHTA()) > 0)   + (instr(word, YETIV()) > 0)
+      + (instr(word, TEVIR()) > 0)      + (instr(word, GERESH()) > 0)   + (instr(word, GERESH_MUQDAM()) > 0)
+      + (instr(word, GERSHAYIM()) > 0)  + (instr(word, QARNEY_PARA()) > 0) + (instr(word, TELISHA_GEDOLA()) > 0)
+      + (instr(word, PAZER()) > 0)      + (instr(word, ATNAH_HAFUKH()) > 0) + (instr(word, OLE()) > 0)
+      + (instr(word, ILUY()) > 0)       + (instr(word, DEHI()) > 0)
+      + ((instr(word, ZARQA()) > 0) OR (instr(word, ZINOR()) > 0)) ) >= 2
+GROUP BY toc_id, ref
+ORDER BY toc_id, ref
+LIMIT 50;`,
   },
   {
     label: 'Largest downloaded books (by verse count)',
