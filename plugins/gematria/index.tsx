@@ -245,13 +245,13 @@ WITH
   wval AS MATERIALIZED (          -- one example word per distinct gematria value
     SELECT gematria(w) AS g, min(w) AS example FROM words WHERE w <> '' AND gematria(w) > 0 GROUP BY g
   ),
-  verses AS MATERIALIZED (        -- each verse's total gematria
-    SELECT c.toc_id, c.ref, gematria(max(c.text)) AS g, substr(strip(max(c.text)), 1, 45) AS verse
+  verses AS MATERIALIZED (        -- one row per DISTINCT verse text (verses that recur verbatim, e.g. וַיְדַבֵּר…, collapse to one)
+    SELECT c.toc_id, c.ref, gematria(c.text) AS g, substr(strip(c.text), 1, 45) AS verse, count(*) AS occurrences
     FROM content c JOIN editions e ON e.id = c.edition_id
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-    GROUP BY c.toc_id, c.ref
+    GROUP BY c.text
   )
-SELECT v.toc_id, v.ref, v.g AS gematria, wv.example AS equal_word, v.verse
+SELECT v.toc_id, v.ref, v.g AS gematria, wv.example AS equal_word, v.occurrences, v.verse
 FROM verses v JOIN wval wv ON wv.g = v.g
 ORDER BY v.g DESC;`,
     });
@@ -276,12 +276,16 @@ FROM (
       sql: `-- Every Torah word whose letters sum to 376 — שָׁלוֹם, עֵשָׂו, and others (e.g. וַיַּשְׁכֵּם "and he rose early").
 -- evalJS splits each verse into words (as a JSON array), json_each unnests them, and gematria() scores each.
 -- Change 376 to 26 (יהוה), 13 (אהבה / אחד)…
-SELECT DISTINCT c.toc_id, c.ref, word.value AS word
+-- One row per DISTINCT word: GROUP BY the consonants-only form (te'amim/nikud vary by occurrence) and show a
+-- sample location + how many times it occurs. (Drop the GROUP BY to instead list every occurrence.)
+SELECT c.toc_id, c.ref, word.value AS word, count(*) AS occurrences
 FROM content c
   JOIN editions e ON e.id = c.edition_id
   JOIN json_each(evalJS('JSON.stringify(strip(value).split(/[\\s\\u05BE\\u05C0]+/))', c.text)) AS word
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  AND gematria(word.value) = 376;`,
+  AND gematria(word.value) = 376
+GROUP BY evalJS('value.replace(/[^\\u05D0-\\u05EA]/g, "")', word.value)
+ORDER BY occurrences DESC;`,
     });
   },
 });
