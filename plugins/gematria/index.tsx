@@ -231,11 +231,11 @@ ORDER BY v.val DESC;`,
     code.registerSample({
       id: 'gematria:verse-equals-word',
       label: 'Any verse whose gematria equals a single word',
-      sql: `-- Every verse whose ENTIRE gematria equals that of some single Hebrew word — ONE row per (verse, word) pair,
--- so a verse whose total matches several distinct words appears once per word (e.g. Exodus 15:18 = 376 pairs with
--- עֵשָׂו, שָׁלוֹם, …). Verses that recur verbatim collapse to one (occurrences shows how many times); words are
--- de-duped by their consonants (te'amim vary). gematria() ignores nikud/te'amim/HTML. Download the Torah books in
--- Storage first. (Click a verse ref to open it; click any header to sort.)
+      sql: `-- Every verse whose ENTIRE gematria equals that of one or more single Hebrew words — one row per verse, with
+-- every matching word joined by ' / ' (e.g. Exodus 15:18 = 376 → עֵשָׂו / שָׁלוֹם / …). Verses that recur verbatim
+-- collapse to one (occurrences shows how many times); words are de-duped by their consonants (te'amim vary).
+-- gematria() ignores nikud/te'amim/HTML. Download the Torah books in Storage first. (Click a ref to open it; click
+-- any header to sort.)
 WITH
   words AS MATERIALIZED (         -- every word in the Torah (evalJS splits, json_each unnests)
     SELECT word.value AS w
@@ -254,9 +254,10 @@ WITH
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
     GROUP BY c.text
   )
-SELECT v.toc_id, v.ref, v.g AS gematria, m.word AS equal_word, v.occurrences, v.verse
+SELECT v.toc_id, v.ref, v.g AS gematria, count(*) AS word_count, group_concat(m.word, ' / ') AS equal_words, v.occurrences, v.verse
 FROM verses v JOIN matches m ON m.g = v.g
-ORDER BY v.g DESC, v.toc_id, v.ref, m.word;`,
+GROUP BY v.toc_id, v.ref
+ORDER BY v.g DESC;`,
     });
     code.registerSample({
       id: 'gematria:triangular',
