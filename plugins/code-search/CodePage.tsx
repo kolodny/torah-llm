@@ -44,6 +44,8 @@ function registerSqlCompletion() {
         suggestions.push({ label: kw, kind: K.Keyword, insertText: kw, range });
       const snippet = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
       suggestions.push({ label: 'strip', kind: K.Function, insertText: 'strip(${1:text})', insertTextRules: snippet, detail: 'remove HTML tags', range });
+      suggestions.push({ label: 'words', kind: K.Function, insertText: 'words(${1:text})', insertTextRules: snippet, detail: 'split a verse into a JSON array of words — pair with json_each()', range });
+      suggestions.push({ label: 'letters', kind: K.Function, insertText: 'letters(${1:text})', insertTextRules: snippet, detail: 'keep only Hebrew letters (no vowels, accents, or HTML)', range });
       suggestions.push({ label: 'link', kind: K.Function, insertText: 'link(${1:book}, ${2:ref})', insertTextRules: snippet, detail: 'explicit viewer link (book, ref) — or just select toc_id + ref to auto-link', range });
       suggestions.push({ label: 'evalJS', kind: K.Function, insertText: "evalJS('${1:value.length > 80}', ${2:text})", insertTextRules: snippet, detail: 'run a JS expression (value, args, strip, H)', range });
       for (const name of HEBREW_CHAR_NAMES)
@@ -132,11 +134,10 @@ ORDER BY times DESC;`,
   },
   {
     label: 'Genesis 1:1 — seven words and twenty-eight letters',
-    sql: `-- Chazal note the Torah opens with SEVEN words and TWENTY-EIGHT letters (28 = כֹּחַ, "strength"). evalJS runs a
--- JS expression per row — \`value\` is the cell and strip() removes HTML — and JS regex makes both counts a
--- one-liner (SQLite has no regex): \\s+ splits words; [\\u05D0-\\u05EA] is the Hebrew-letter range (no vowels/te'amim).
-SELECT evalJS('strip(value).trim().split(/\\s+/).length', c.text) AS words,
-       evalJS('(strip(value).match(/[\\u05D0-\\u05EA]/g) || []).length', c.text) AS letters
+    sql: `-- Chazal note the Torah opens with SEVEN words and TWENTY-EIGHT letters (28 = כֹּחַ, "strength"). words() splits
+-- the verse (json_array_length counts them); letters() keeps just the Hebrew letters (no vowels/te'amim), and
+-- length() counts those — so both numbers are plain SQL, no JS needed.
+SELECT json_array_length(words(c.text)) AS words, length(letters(c.text)) AS letters
 FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang = 'he';`,
   },
@@ -179,7 +180,7 @@ const sortValue = (v: unknown): string | number => {
 // renderCell() for the link/render/auto-link cells. Click a header to sort (asc → desc → none).
 function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[]; ctx: PluginContext; renderers: Map<string, CellRenderer> }) {
   const cols = Object.keys(rows[0]);
-  const text = (v: unknown) => stripHtml(v).slice(0, 200);
+  const text = (v: unknown) => stripHtml(v); // no truncation — long cells just wrap within maxWidth and grow taller
   const [sorting, setSorting] = useState<SortingState>([]);
 
   const columns = useMemo<ColumnDef<Record<string, unknown>>[]>(
@@ -298,9 +299,13 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
   );
 }
 
+// Editor state (the SQL and the chosen sample) is mirrored into the URL so a reload restores it. We read it
+// once on mount and write with history.replaceState (not pushState — typing shouldn't pile up Back entries),
+// preserving any other query params (page=…, etc.).
+const initialParams = () => new URLSearchParams(window.location.search);
 export default function CodePage({ ctx }: { ctx: PluginContext }) {
-  const [sql, setSql] = useState(SAMPLES[0].sql);
-  const [sample, setSample] = useState('0');
+  const [sql, setSql] = useState(() => initialParams().get('sql') ?? SAMPLES[0].sql);
+  const [sample, setSample] = useState(() => initialParams().get('sample') ?? '0');
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -313,6 +318,14 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
   useEffect(() => {
     ctx.data.schema().then((s) => { schemaCache = s; }).catch(() => {});
   }, [ctx]);
+
+  // Persist editor state to the URL (replace, not push) whenever the SQL or selected sample changes.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    p.set('sql', sql);
+    p.set('sample', sample);
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}?${p.toString()}`);
+  }, [sql, sample]);
 
   const run = async () => {
     setBusy(true);
@@ -334,7 +347,7 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
     <div className="plugin-page" style={{ maxWidth: 'none' }}>
       <h2>Code · SQLite</h2>
       <Text size="sm" c="dimmed" mb="xs">
-        Query your downloaded books directly (read-only). Autocomplete knows the schema. Built-ins: <Code>strip(text)</Code> (removes HTML); Hebrew chars as functions (<Code>PAZER()</Code>, <Code>ALEPH()</Code>, …); select <Code>toc_id</Code> + <Code>ref</Code> to auto-link verses (or <Code>link(book, ref [, label])</Code>); <Code>evalJS(expr, ...vals)</Code> runs JS (<Code>value</Code>, <Code>args</Code>, <Code>strip()</Code>, <Code>H</Code> in scope). Plugins add functions, renderers, and samples.
+        Query your downloaded books directly (read-only). Autocomplete knows the schema. Built-ins: <Code>strip(text)</Code> (removes HTML); <Code>words(text)</Code> (verse → JSON array of words, use with <Code>json_each</Code>); <Code>letters(text)</Code> (Hebrew letters only); Hebrew chars as functions (<Code>PAZER()</Code>, <Code>ALEPH()</Code>, …); select <Code>toc_id</Code> + <Code>ref</Code> to auto-link verses (or <Code>link(book, ref [, label])</Code>); <Code>evalJS(expr, ...vals)</Code> runs JS (<Code>value</Code>, <Code>args</Code>, <Code>strip()</Code>, <Code>H</Code> in scope). Plugins add functions, renderers, and samples.
       </Text>
       <Select
         label="Sample queries"

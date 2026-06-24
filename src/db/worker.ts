@@ -433,6 +433,22 @@ let queryDeadline = 0; // ms epoch; > 0 only while a user query runs — the pro
 function registerFunctions() {
   // strip(text): remove HTML tags — e.g. substr(strip(c.text), 1, 40) gives a clean preview.
   db.createFunction('strip', (_pCx: unknown, v: unknown) => stripTags(v), { arity: 1, deterministic: true });
+  // words(text): split a verse into a JSON array of words — strips HTML, then splits on whitespace, maqaf
+  // (U+05BE) and paseq (U+05C0). Pair with json_each() to score/filter each word without per-row JS, e.g.
+  //   SELECT w.value FROM content c, json_each(words(c.text)) w WHERE gematria(w.value) = 376
+  db.createFunction(
+    'words',
+    (_pCx: unknown, v: unknown) => JSON.stringify(stripTags(v).split(/[\s־׀]+/).filter(Boolean)),
+    { arity: 1, deterministic: true }
+  );
+  // letters(text): keep only the Hebrew letters (א–ת, incl. final forms; U+05D0–U+05EA) — strips HTML, vowels
+  // (nikud), cantillation (te'amim) and punctuation. Use as a consonantal key (GROUP BY letters(word)) or count
+  // letters with length(letters(text)).
+  db.createFunction(
+    'letters',
+    (_pCx: unknown, v: unknown) => (stripTags(v).match(/[א-ת]/g) || []).join(''),
+    { arity: 1, deterministic: true }
+  );
   db.createFunction(
     'evalJS',
     (_pCx: unknown, expr: string, ...vals: unknown[]) => {

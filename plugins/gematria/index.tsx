@@ -233,28 +233,27 @@ ORDER BY v.val DESC;`,
       label: 'Any verse whose gematria equals a single word',
       sql: `-- Every verse whose ENTIRE gematria equals that of one or more single Hebrew words — one row per verse, with
 -- every matching word joined by ' / ' (e.g. Exodus 15:18 = 376 → עֵשָׂו / שָׁלוֹם / …). Verses that recur verbatim
--- collapse to one (occurrences shows how many times); words are de-duped by their consonants (te'amim vary).
--- gematria() ignores nikud/te'amim/HTML. Download the Torah books in Storage first. (Click a ref to open it; click
--- any header to sort.)
+-- collapse to one; words are de-duped by their consonants (te'amim vary). gematria() ignores nikud/te'amim/HTML.
+-- Download the Torah books in Storage first. (Click a ref to open it; click any header to sort.)
 WITH
-  words AS MATERIALIZED (         -- every word in the Torah (evalJS splits, json_each unnests)
+  all_words AS MATERIALIZED (     -- every word in the Torah (words() splits, json_each unnests)
     SELECT word.value AS w
     FROM content c JOIN editions e ON e.id = c.edition_id
-      JOIN json_each(evalJS('JSON.stringify(strip(value).split(/[\\s\\u05BE\\u05C0]+/))', c.text)) AS word
+      JOIN json_each(words(c.text)) AS word
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   ),
   matches AS MATERIALIZED (       -- each DISTINCT word (by consonants) and its gematria
     SELECT gematria(w) AS g, w AS word
-    FROM words WHERE w <> '' AND gematria(w) > 0
-    GROUP BY evalJS('value.replace(/[^\\u05D0-\\u05EA]/g, "")', w)
+    FROM all_words WHERE w <> '' AND gematria(w) > 0
+    GROUP BY letters(w)
   ),
   verses AS MATERIALIZED (        -- one row per DISTINCT verse text (verses that recur verbatim, e.g. וַיְדַבֵּר…, collapse to one)
-    SELECT c.toc_id, c.ref, gematria(c.text) AS g, substr(strip(c.text), 1, 45) AS verse, count(*) AS occurrences
+    SELECT c.toc_id, c.ref, gematria(c.text) AS g, substr(strip(c.text), 1, 45) AS verse
     FROM content c JOIN editions e ON e.id = c.edition_id
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
     GROUP BY c.text
   )
-SELECT v.toc_id, v.ref, v.g AS gematria, count(*) AS word_count, group_concat(m.word, ' / ') AS equal_words, v.occurrences, v.verse
+SELECT v.toc_id, v.ref, v.g AS gematria, count(*) AS word_count, group_concat(m.word, ' / ') AS equal_words, v.verse
 FROM verses v JOIN matches m ON m.g = v.g
 GROUP BY v.toc_id, v.ref
 ORDER BY v.g DESC;`,
@@ -280,15 +279,16 @@ FROM (
       sql: `-- Every Torah word whose letters sum to 376 — שָׁלוֹם, עֵשָׂו, and others (e.g. וַיַּשְׁכֵּם "and he rose early").
 -- evalJS splits each verse into words (as a JSON array), json_each unnests them, and gematria() scores each.
 -- Change 376 to 26 (יהוה), 13 (אהבה / אחד)…
+-- words(text) splits a verse into a JSON array of words; json_each unnests them so gematria() scores each.
 -- One row per DISTINCT word: GROUP BY the consonants-only form (te'amim/nikud vary by occurrence) and show a
 -- sample location + how many times it occurs. (Drop the GROUP BY to instead list every occurrence.)
 SELECT c.toc_id, c.ref, word.value AS word, count(*) AS occurrences
 FROM content c
   JOIN editions e ON e.id = c.edition_id
-  JOIN json_each(evalJS('JSON.stringify(strip(value).split(/[\\s\\u05BE\\u05C0]+/))', c.text)) AS word
+  JOIN json_each(words(c.text)) AS word
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   AND gematria(word.value) = 376
-GROUP BY evalJS('value.replace(/[^\\u05D0-\\u05EA]/g, "")', word.value)
+GROUP BY letters(word.value)
 ORDER BY occurrences DESC;`,
     });
   },
