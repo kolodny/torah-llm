@@ -231,8 +231,8 @@ ORDER BY v.val DESC;`,
     code.registerSample({
       id: 'gematria:verse-equals-word',
       label: 'Any verse whose gematria equals a single word',
-      sql: `-- Every verse whose ENTIRE gematria equals that of some single Hebrew word (an example is shown, drawn
--- from anywhere in the Torah). e.g. the Shema (Deut 6:4); and Exodus 15:18 = שָׁלוֹם / עֵשָׂו (376). The verse
+      sql: `-- Every verse whose ENTIRE gematria equals that of some single Hebrew word (the most common matching word
+-- is shown as an example). e.g. the Shema (Deut 6:4); and Exodus 15:18 = 376 (עֵשָׂו, שָׁלוֹם, …). The verse
 -- total is usually large, so matches are weighted toward longer single words. gematria() ignores nikud/te'amim/HTML.
 -- Download the Torah books in Storage first. (Click a verse ref to open it; ORDER BY v.g for the smallest.)
 WITH
@@ -242,8 +242,12 @@ WITH
       JOIN json_each(evalJS('JSON.stringify(strip(value).split(/[\\s\\u05BE\\u05C0]+/))', c.text)) AS word
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   ),
-  wval AS MATERIALIZED (          -- one example word per distinct gematria value
-    SELECT gematria(w) AS g, min(w) AS example FROM words WHERE w <> '' AND gematria(w) > 0 GROUP BY g
+  wval AS MATERIALIZED (          -- the most COMMON word at each gematria value (a recognizable example, not an arbitrary one)
+    SELECT g, example FROM (
+      SELECT gematria(w) AS g, w AS example, row_number() OVER (PARTITION BY gematria(w) ORDER BY count(*) DESC) AS rn
+      FROM words WHERE w <> '' AND gematria(w) > 0
+      GROUP BY evalJS('value.replace(/[^\\u05D0-\\u05EA]/g, "")', w)
+    ) WHERE rn = 1
   ),
   verses AS MATERIALIZED (        -- one row per DISTINCT verse text (verses that recur verbatim, e.g. וַיְדַבֵּר…, collapse to one)
     SELECT c.toc_id, c.ref, gematria(c.text) AS g, substr(strip(c.text), 1, 45) AS verse, count(*) AS occurrences

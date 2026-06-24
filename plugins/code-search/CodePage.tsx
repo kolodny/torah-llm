@@ -8,6 +8,7 @@ import * as monacoEsm from 'monaco-editor/esm/vs/editor/editor.api';
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'; // SQL syntax only (avoids bundling every language)
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import { Button, Group, Text, Code, Table, Select, Anchor, Pagination } from '@mantine/core';
+import { useReactTable, getCoreRowModel, getSortedRowModel, getPaginationRowModel, type SortingState, type ColumnDef } from '@tanstack/react-table';
 import type { PluginContext } from '../../src/plugins/types';
 import { useSlot } from '../../src/plugins/host';
 import { CODE_PAGE_ID, type CellRenderer, type CodeSample } from './api';
@@ -162,14 +163,39 @@ ORDER BY verses DESC;`,
 ];
 
 const PAGE_SIZE = 25;
+
+// Decode a cell into a primitive the table can SORT by: numbers stay numeric; a link() cell sorts by its
+// ref/label; a render()/matrix cell sorts to the end. Rendering still uses the original value (renderCell).
+const sortValue = (v: unknown): string | number => {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'bigint') return Number(v);
+  const l = decodeLink(v);
+  if (l) return l.ref ?? l.label ?? l.book ?? '';
+  if (decodeRender(v)) return '￿';
+  return stripHtml(v);
+};
+
+// Sorting + pagination come from TanStack Table (headless); we keep Mantine's <Table> for markup and our own
+// renderCell() for the link/render/auto-link cells. Click a header to sort (asc → desc → none).
 function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[]; ctx: PluginContext; renderers: Map<string, CellRenderer> }) {
   const cols = Object.keys(rows[0]);
   const text = (v: unknown) => stripHtml(v).slice(0, 200);
-  const [page, setPage] = useState(1);
-  useEffect(() => setPage(1), [rows]); // a fresh query → back to page 1
-  const pageCount = Math.ceil(rows.length / PAGE_SIZE);
-  const start = (Math.min(page, pageCount) - 1) * PAGE_SIZE;
-  const pageRows = rows.slice(start, start + PAGE_SIZE);
+  const [sorting, setSorting] = useState<SortingState>([]);
+
+  const columns = useMemo<ColumnDef<Record<string, unknown>>[]>(
+    () => cols.map((c) => ({ id: c, accessorFn: (row) => sortValue(row[c]) })),
+    [cols]
+  );
+  const table = useReactTable({
+    data: rows,
+    columns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    initialState: { pagination: { pageSize: PAGE_SIZE } }, // autoResetPageIndex (default) → new query / re-sort jumps to page 1
+  });
 
   // A clickable link into the viewer. The href is real (URL shows in the status bar; cmd/ctrl/shift/middle
   // click opens a new tab); a plain left-click navigates in-app instead.
@@ -215,6 +241,11 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
     return <span dir="auto">{text(v)}</span>;
   };
 
+  const { pageIndex, pageSize } = table.getState().pagination;
+  const pageCount = table.getPageCount();
+  const start = pageIndex * pageSize;
+  const pageRows = table.getRowModel().rows;
+
   return (
     <>
       {pageCount > 1 && (
@@ -222,7 +253,7 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
           <Text size="xs" c="dimmed">
             rows {start + 1}–{start + pageRows.length} of {rows.length}
           </Text>
-          <Pagination size="xs" total={pageCount} value={Math.min(page, pageCount)} onChange={setPage} withEdges />
+          <Pagination size="xs" total={pageCount} value={pageIndex + 1} onChange={(p) => table.setPageIndex(p - 1)} withEdges />
         </Group>
       )}
       {/* Only scroll the table HORIZONTALLY (for wide rows / the matrix renderer); the page itself
@@ -231,14 +262,33 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
       <Table.ScrollContainer minWidth={340} type="native" mt={pageCount > 1 ? 0 : 'sm'}>
         <Table striped withTableBorder fz="xs">
           <Table.Thead>
-            <Table.Tr>{cols.map((c) => <Table.Th key={c}>{c}</Table.Th>)}</Table.Tr>
+            <Table.Tr>
+              {table.getHeaderGroups()[0].headers.map((header) => {
+                const dir = header.column.getIsSorted(); // 'asc' | 'desc' | false
+                return (
+                  <Table.Th
+                    key={header.id}
+                    onClick={header.column.getToggleSortingHandler()}
+                    style={{ cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}
+                    title="Click to sort"
+                  >
+                    {header.column.id}{dir === 'asc' ? ' ▲' : dir === 'desc' ? ' ▼' : ''}
+                  </Table.Th>
+                );
+              })}
+            </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {pageRows.map((r, i) => (
-              <Table.Tr key={start + i}>
-                {cols.map((c) => (
-                  <Table.Td key={c} style={decodeRender(r[c]) ? undefined : { maxWidth: 380 }}>{renderCell(r, c)}</Table.Td>
-                ))}
+            {pageRows.map((row) => (
+              <Table.Tr key={row.id}>
+                {row.getVisibleCells().map((cell) => {
+                  const orig = row.original[cell.column.id];
+                  return (
+                    <Table.Td key={cell.id} style={decodeRender(orig) ? undefined : { maxWidth: 380 }}>
+                      {renderCell(row.original, cell.column.id)}
+                    </Table.Td>
+                  );
+                })}
               </Table.Tr>
             ))}
           </Table.Tbody>
