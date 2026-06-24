@@ -231,10 +231,11 @@ ORDER BY v.val DESC;`,
     code.registerSample({
       id: 'gematria:verse-equals-word',
       label: 'Any verse whose gematria equals a single word',
-      sql: `-- Every verse whose ENTIRE gematria equals that of some single Hebrew word (the most common matching word
--- is shown as an example). e.g. the Shema (Deut 6:4); and Exodus 15:18 = 376 (עֵשָׂו, שָׁלוֹם, …). The verse
--- total is usually large, so matches are weighted toward longer single words. gematria() ignores nikud/te'amim/HTML.
--- Download the Torah books in Storage first. (Click a verse ref to open it; ORDER BY v.g for the smallest.)
+      sql: `-- Every verse whose ENTIRE gematria equals that of some single Hebrew word — ONE row per (verse, word) pair,
+-- so a verse whose total matches several distinct words appears once per word (e.g. Exodus 15:18 = 376 pairs with
+-- עֵשָׂו, שָׁלוֹם, …). Verses that recur verbatim collapse to one (occurrences shows how many times); words are
+-- de-duped by their consonants (te'amim vary). gematria() ignores nikud/te'amim/HTML. Download the Torah books in
+-- Storage first. (Click a verse ref to open it; click any header to sort.)
 WITH
   words AS MATERIALIZED (         -- every word in the Torah (evalJS splits, json_each unnests)
     SELECT word.value AS w
@@ -242,12 +243,10 @@ WITH
       JOIN json_each(evalJS('JSON.stringify(strip(value).split(/[\\s\\u05BE\\u05C0]+/))', c.text)) AS word
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
   ),
-  wval AS MATERIALIZED (          -- the most COMMON word at each gematria value (a recognizable example, not an arbitrary one)
-    SELECT g, example FROM (
-      SELECT gematria(w) AS g, w AS example, row_number() OVER (PARTITION BY gematria(w) ORDER BY count(*) DESC) AS rn
-      FROM words WHERE w <> '' AND gematria(w) > 0
-      GROUP BY evalJS('value.replace(/[^\\u05D0-\\u05EA]/g, "")', w)
-    ) WHERE rn = 1
+  matches AS MATERIALIZED (       -- each DISTINCT word (by consonants) and its gematria
+    SELECT gematria(w) AS g, w AS word
+    FROM words WHERE w <> '' AND gematria(w) > 0
+    GROUP BY evalJS('value.replace(/[^\\u05D0-\\u05EA]/g, "")', w)
   ),
   verses AS MATERIALIZED (        -- one row per DISTINCT verse text (verses that recur verbatim, e.g. וַיְדַבֵּר…, collapse to one)
     SELECT c.toc_id, c.ref, gematria(c.text) AS g, substr(strip(c.text), 1, 45) AS verse, count(*) AS occurrences
@@ -255,9 +254,9 @@ WITH
     WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
     GROUP BY c.text
   )
-SELECT v.toc_id, v.ref, v.g AS gematria, wv.example AS equal_word, v.occurrences, v.verse
-FROM verses v JOIN wval wv ON wv.g = v.g
-ORDER BY v.g DESC;`,
+SELECT v.toc_id, v.ref, v.g AS gematria, m.word AS equal_word, v.occurrences, v.verse
+FROM verses v JOIN matches m ON m.g = v.g
+ORDER BY v.g DESC, v.toc_id, v.ref, m.word;`,
     });
     code.registerSample({
       id: 'gematria:triangular',
