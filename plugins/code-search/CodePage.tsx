@@ -7,7 +7,7 @@ import * as monacoEsm from 'monaco-editor/esm/vs/editor/editor.api';
 // @ts-ignore
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'; // SQL syntax only (avoids bundling every language)
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
-import { Button, Group, Text, Code, ScrollArea, Table, Select, Anchor, Pagination } from '@mantine/core';
+import { Button, Group, Text, Code, Table, Select, Anchor, Pagination } from '@mantine/core';
 import type { PluginContext } from '../../src/plugins/types';
 import { useSlot } from '../../src/plugins/host';
 import { CODE_PAGE_ID, type CellRenderer, type CodeSample } from './api';
@@ -225,8 +225,11 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
           <Pagination size="xs" total={pageCount} value={Math.min(page, pageCount)} onChange={setPage} withEdges />
         </Group>
       )}
-      <ScrollArea mt={pageCount > 1 ? 0 : 'sm'} mah={600} type="auto">
-        <Table striped withTableBorder stickyHeader fz="xs">
+      {/* Only scroll the table HORIZONTALLY (for wide rows / the matrix renderer); the page itself
+          (.plugin-page) handles vertical scroll, so every row of the page is visible without a nested
+          fixed-height box that clipped rows — badly so on mobile. */}
+      <Table.ScrollContainer minWidth={340} type="native" mt={pageCount > 1 ? 0 : 'sm'}>
+        <Table striped withTableBorder fz="xs">
           <Table.Thead>
             <Table.Tr>{cols.map((c) => <Table.Th key={c}>{c}</Table.Th>)}</Table.Tr>
           </Table.Thead>
@@ -240,7 +243,7 @@ function ResultsTable({ rows, ctx, renderers }: { rows: Record<string, unknown>[
             ))}
           </Table.Tbody>
         </Table>
-      </ScrollArea>
+      </Table.ScrollContainer>
     </>
   );
 }
