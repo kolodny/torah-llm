@@ -449,6 +449,13 @@ function registerFunctions() {
     (_pCx: unknown, v: unknown) => (stripTags(v).match(/[א-ת]/g) || []).join(''),
     { arity: 1, deterministic: true }
   );
+  // chapter(ref): the leading number of a "chapter:verse" ref as an integer (e.g. chapter('7:89') = 7), or
+  // NULL if the ref has no numeric chapter — handy for grouping/sorting by chapter without substr/instr.
+  db.createFunction(
+    'chapter',
+    (_pCx: unknown, v: unknown) => { const m = String(v ?? '').match(/^(\d+):/); return m ? Number(m[1]) : null; },
+    { arity: 1, deterministic: true }
+  );
   db.createFunction(
     'evalJS',
     (_pCx: unknown, expr: string, ...vals: unknown[]) => {

@@ -46,6 +46,7 @@ function registerSqlCompletion() {
       suggestions.push({ label: 'strip', kind: K.Function, insertText: 'strip(${1:text})', insertTextRules: snippet, detail: 'remove HTML tags', range });
       suggestions.push({ label: 'words', kind: K.Function, insertText: 'words(${1:text})', insertTextRules: snippet, detail: 'split a verse into a JSON array of words — pair with json_each()', range });
       suggestions.push({ label: 'letters', kind: K.Function, insertText: 'letters(${1:text})', insertTextRules: snippet, detail: 'keep only Hebrew letters (no vowels, accents, or HTML)', range });
+      suggestions.push({ label: 'chapter', kind: K.Function, insertText: 'chapter(${1:ref})', insertTextRules: snippet, detail: 'chapter number from a "chapter:verse" ref (integer, or NULL)', range });
       suggestions.push({ label: 'link', kind: K.Function, insertText: 'link(${1:book}, ${2:ref})', insertTextRules: snippet, detail: 'explicit viewer link (book, ref) — or just select toc_id + ref to auto-link', range });
       suggestions.push({ label: 'evalJS', kind: K.Function, insertText: "evalJS('${1:value.length > 80}', ${2:text})", insertTextRules: snippet, detail: 'run a JS expression (value, args, strip, H)', range });
       for (const name of HEBREW_CHAR_NAMES)
@@ -133,6 +134,19 @@ HAVING times >= 3
 ORDER BY times DESC;`,
   },
   {
+    label: 'The Torah’s most-frequent words',
+    sql: `-- words() splits each verse into a JSON array; json_each unnests them; letters() reduces each to its bare
+-- consonants (so nikud/te'amim variants count together). The winner is אֵת, the (untranslatable) direct-object
+-- marker — followed by אֲשֶׁר, the Divine Name, and אֶל.
+SELECT letters(word.value) AS word, count(*) AS times
+FROM content c JOIN editions e ON e.id = c.edition_id
+  JOIN json_each(words(c.text)) AS word
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  AND letters(word.value) <> ''
+GROUP BY letters(word.value)
+ORDER BY times DESC;`,
+  },
+  {
     label: 'Genesis 1:1 — seven words and twenty-eight letters',
     sql: `-- Chazal note the Torah opens with SEVEN words and TWENTY-EIGHT letters (28 = כֹּחַ, "strength"). words() splits
 -- the verse (json_array_length counts them); letters() keeps just the Hebrew letters (no vowels/te'amim), and
@@ -144,14 +158,22 @@ WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang
   {
     label: 'The longest chapters (by verse count)',
     sql: `-- Trivia: Numbers 7 (Naso — the twelve princes' offerings) is the longest chapter in the Torah at 89 verses.
--- ref is "chapter:verse", so take the part before the ':' as the chapter and count the distinct verses.
-SELECT c.toc_id,
-       CAST(substr(c.ref, 1, instr(c.ref, ':') - 1) AS INTEGER) AS chapter,
-       count(DISTINCT c.ref) AS verses
+-- chapter(ref) pulls the chapter number out of a "chapter:verse" ref; count the distinct verses in each.
+SELECT c.toc_id, chapter(c.ref) AS chapter, count(DISTINCT c.ref) AS verses
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he' AND instr(c.ref, ':') > 0
-GROUP BY c.toc_id, chapter
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he' AND chapter(c.ref) IS NOT NULL
+GROUP BY c.toc_id, chapter(c.ref)
 ORDER BY verses DESC;`,
+  },
+  {
+    label: 'The longest verses (by word count)',
+    sql: `-- The wordiest verses in the Torah. words() splits each verse and json_array_length counts the words — so
+-- (unlike counting spaces) poetic layout and maqaf-joined words are handled correctly. Exodus 32:1 (the golden
+-- calf) tops the Torah at 34 words.
+SELECT c.toc_id, c.ref, json_array_length(words(c.text)) AS word_count, substr(strip(c.text), 1, 50) AS preview
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+ORDER BY word_count DESC;`,
   },
   {
     label: 'Largest downloaded books (by verse count)',
@@ -347,7 +369,7 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
     <div className="plugin-page" style={{ maxWidth: 'none' }}>
       <h2>Code · SQLite</h2>
       <Text size="sm" c="dimmed" mb="xs">
-        Query your downloaded books directly (read-only). Autocomplete knows the schema. Built-ins: <Code>strip(text)</Code> (removes HTML); <Code>words(text)</Code> (verse → JSON array of words, use with <Code>json_each</Code>); <Code>letters(text)</Code> (Hebrew letters only); Hebrew chars as functions (<Code>PAZER()</Code>, <Code>ALEPH()</Code>, …); select <Code>toc_id</Code> + <Code>ref</Code> to auto-link verses (or <Code>link(book, ref [, label])</Code>); <Code>evalJS(expr, ...vals)</Code> runs JS (<Code>value</Code>, <Code>args</Code>, <Code>strip()</Code>, <Code>H</Code> in scope). Plugins add functions, renderers, and samples.
+        Query your downloaded books directly (read-only). Autocomplete knows the schema. Built-ins: <Code>strip(text)</Code> (removes HTML); <Code>words(text)</Code> (verse → JSON array of words, use with <Code>json_each</Code>); <Code>letters(text)</Code> (Hebrew letters only); <Code>chapter(ref)</Code> (chapter number of a ref); Hebrew chars as functions (<Code>PAZER()</Code>, <Code>ALEPH()</Code>, …); select <Code>toc_id</Code> + <Code>ref</Code> to auto-link verses (or <Code>link(book, ref [, label])</Code>); <Code>evalJS(expr, ...vals)</Code> runs JS (<Code>value</Code>, <Code>args</Code>, <Code>strip()</Code>, <Code>H</Code> in scope). Plugins add functions, renderers, and samples.
       </Text>
       <Select
         label="Sample queries"
