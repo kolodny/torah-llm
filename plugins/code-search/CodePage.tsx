@@ -160,26 +160,33 @@ HAVING count(*) = 1
 ORDER BY c.toc_id, c.ref;`,
   },
   {
-    label: 'The letters שעטנז in order (a "shatnez" check)',
-    sql: `-- Pesukim whose letters contain ש, then ע, then ט, then נ, then ז in that order (anywhere in the verse) — a
--- playful nod to the shatnez prohibition. letters() keeps only the Hebrew letters; LIKE with % between each
--- letter matches that subsequence (no regex needed). Change the letters to hunt any subsequence.
+    label: 'The "shatnez" check — שעטנז across words, in order',
+    sql: `-- BaseHasefer's playful שעטנז check: pesukim with FIVE distinct words — one containing ש, a LATER word ע,
+-- then ט, then נ, then ז, in that order. words() splits the verse; the evalJS reduce walks the words, advancing
+-- through "שעטנז" whenever the next letter appears in the next word — a match needs all five.
 SELECT c.toc_id, c.ref, substr(strip(c.text), 1, 60) AS preview
 FROM content c JOIN editions e ON e.id = c.edition_id
 WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  AND letters(c.text) LIKE '%ש%ע%ט%נ%ז%'
+  AND evalJS('JSON.parse(value).reduce((i, w) => i < 5 && w.includes("שעטנז"[i]) ? i + 1 : i, 0) === 5', words(c.text))
 ORDER BY c.toc_id, c.ref;`,
   },
   {
-    label: 'Anagrams of a word in the Torah',
-    sql: `-- Find Torah words built from exactly the same letters as a target (here אבר → בָּאֵר, בָּרָא). letters() gives the
--- bare consonants; evalJS sorts them so any permutation matches. Change "אבר" to any word.
-SELECT DISTINCT c.toc_id, c.ref, word.value AS word
-FROM content c JOIN editions e ON e.id = c.edition_id
-  JOIN json_each(words(c.text)) AS word
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  AND evalJS('[...value].sort().join("")', letters(word.value)) = evalJS('[...value].sort().join("")', 'אבר')
-ORDER BY word;`,
+    label: 'Anagram families in the Torah',
+    sql: `-- Sets of Torah words built from the same letters (e.g. אביו / אויב / יבוא). letters() reduces each word to
+-- its bare consonants; evalJS sorts those into a key so every permutation shares it; GROUP BY the key and keep
+-- those with 3+ distinct words (length ≥ 3 skips trivial two-letter flips).
+WITH torah_words AS (
+  SELECT DISTINCT letters(word.value) AS word
+  FROM content c JOIN editions e ON e.id = c.edition_id
+    JOIN json_each(words(c.text)) AS word
+  WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+    AND length(letters(word.value)) >= 3
+)
+SELECT group_concat(word, ' / ') AS anagrams, count(*) AS words
+FROM torah_words
+GROUP BY evalJS('[...value].sort().join("")', word)
+HAVING words >= 3
+ORDER BY words DESC;`,
   },
   {
     label: 'Genesis 1:1 — seven words and twenty-eight letters',
