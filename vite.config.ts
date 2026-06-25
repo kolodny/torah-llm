@@ -29,10 +29,13 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,wasm,ttf,svg,ico,png,woff2}'],
-        globIgnores: ['**/db/**'], // the corpus is fetched on demand into OPFS, never precached
+        // Precache the app shell AND the small boot catalog (db/db.sqlite.gz ~1.5 MB + its manifest) so the
+        // catalog resolves OFFLINE even on a fresh/evicted OPFS (otherwise the boot fetch fails offline and the
+        // catalog never loads). The large per-book slices (db/toc_*) stay fetched on demand into OPFS.
+        globPatterns: ['**/*.{js,css,html,wasm,ttf,svg,ico,png,woff2}', 'db/db.sqlite.gz', 'db/manifest.json'],
+        globIgnores: ['**/db/toc_*'],
         navigateFallbackDenylist: [/\/db\//],
-        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // the SQLite .wasm is ~865 KB; allow headroom
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // the SQLite .wasm is ~865 KB + the boot db ~1.5 MB; allow headroom
         cleanupOutdatedCaches: true,
       },
     }),
