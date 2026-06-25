@@ -46,9 +46,11 @@ function Shell() {
           {active?.id === 'viewer' && (
             <Burger opened={state.navOpen} onClick={() => dispatch({ type: 'toggleNav' })} hiddenFrom="sm" size="sm" aria-label="Toggle catalog" />
           )}
-          <Title order={4} style={{ whiteSpace: 'nowrap' }}>
-            תורה<Box component="span" visibleFrom="xs"> · Torah</Box>
-          </Title>
+          <a href={import.meta.env.BASE_URL} aria-label="Torah — home" style={{ color: 'inherit', textDecoration: 'none' }}>
+            <Title order={4} style={{ whiteSpace: 'nowrap' }}>
+              תורה<Box component="span" visibleFrom="xs"> · Torah</Box>
+            </Title>
+          </a>
           {/* Tabs scroll horizontally if they ever overflow; labels collapse to icons on mobile. */}
           <Box style={{ flex: 1, minWidth: 0, overflowX: 'auto', scrollbarWidth: 'none' }}>
             <Tabs value={active?.id ?? null} onChange={(v) => v && dispatch({ type: 'setPage', id: v })} variant="pills">

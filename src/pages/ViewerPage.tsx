@@ -327,7 +327,11 @@ export default function ViewerPage() {
       const el = document.querySelector<HTMLElement>(`.verse[data-ref="${window.CSS.escape(ref)}"]`);
       if (el) {
         scrolledForRef.current = ref;
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Instant (not smooth): a smooth animation races with the infinite-scroll prepend — the top sentinel
+        // becomes visible mid-flight, loadMore('up') inserts a section, and the in-flight animation lands on
+        // the wrong offset (target ends up off-screen). Instant positioning completes before any prepend, and
+        // the prepend-adjust (useLayoutEffect) then keeps the verse pinned as sections load around it.
+        el.scrollIntoView({ block: 'center' });
         el.classList.remove('flash');
         void el.offsetWidth; // force reflow so the animation restarts if we re-navigate to the same verse
         el.classList.add('flash');
