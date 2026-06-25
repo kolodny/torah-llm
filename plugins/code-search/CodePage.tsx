@@ -147,6 +147,41 @@ GROUP BY letters(word.value)
 ORDER BY times DESC;`,
   },
   {
+    label: 'Words that appear only once in the Torah (hapax legomena)',
+    sql: `-- words() splits each verse, letters() reduces to bare consonants, json_each unnests. Group by the consonant
+-- form and keep those appearing exactly ONCE across the Chumash — the Torah's hapax legomena. (count(*) is the
+-- group size; the bare toc_id/ref are that single occurrence's location.)
+SELECT c.toc_id, c.ref, letters(word.value) AS word
+FROM content c JOIN editions e ON e.id = c.edition_id
+  JOIN json_each(words(c.text)) AS word
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he' AND letters(word.value) <> ''
+GROUP BY letters(word.value)
+HAVING count(*) = 1
+ORDER BY c.toc_id, c.ref;`,
+  },
+  {
+    label: 'The letters שעטנז in order (a "shatnez" check)',
+    sql: `-- Pesukim whose letters contain ש, then ע, then ט, then נ, then ז in that order (anywhere in the verse) — a
+-- playful nod to the shatnez prohibition. letters() keeps only the Hebrew letters; LIKE with % between each
+-- letter matches that subsequence (no regex needed). Change the letters to hunt any subsequence.
+SELECT c.toc_id, c.ref, substr(strip(c.text), 1, 60) AS preview
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  AND letters(c.text) LIKE '%ש%ע%ט%נ%ז%'
+ORDER BY c.toc_id, c.ref;`,
+  },
+  {
+    label: 'Anagrams of a word in the Torah',
+    sql: `-- Find Torah words built from exactly the same letters as a target (here אבר → בָּאֵר, בָּרָא). letters() gives the
+-- bare consonants; evalJS sorts them so any permutation matches. Change "אבר" to any word.
+SELECT DISTINCT c.toc_id, c.ref, word.value AS word
+FROM content c JOIN editions e ON e.id = c.edition_id
+  JOIN json_each(words(c.text)) AS word
+WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  AND evalJS('[...value].sort().join("")', letters(word.value)) = evalJS('[...value].sort().join("")', 'אבר')
+ORDER BY word;`,
+  },
+  {
     label: 'Genesis 1:1 — seven words and twenty-eight letters',
     sql: `-- Chazal note the Torah opens with SEVEN words and TWENTY-EIGHT letters (28 = כֹּחַ, "strength"). words() splits
 -- the verse (json_array_length counts them); letters() keeps just the Hebrew letters (no vowels/te'amim), and

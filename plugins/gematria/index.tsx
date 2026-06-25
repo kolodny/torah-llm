@@ -27,6 +27,13 @@ const strip = (html: string) => {
 };
 // The same gematria math as a pure body string, so the Code page's SQL gematria(text) matches this tooltip's.
 const GEMATRIA_BODY = `var GV=${JSON.stringify(VALUE)}; var t=String(text), n=0; for (var i=0;i<t.length;i++) n+=GV[t[i]]||0; return n;`;
+// Atbash: each letter swaps with its mirror across the alef-bet (א↔ת, ב↔ש, …); atbash(text) sums the
+// values of those mirrored letters. ATBASH[c] = the standard value of c's mirror; finals fold to their base.
+const ALEPH_BET = 'אבגדהוזחטיכלמנסעפצקרשת';
+const ATBASH: Record<string, number> = {};
+[...ALEPH_BET].forEach((c, i) => { ATBASH[c] = VALUE[ALEPH_BET[ALEPH_BET.length - 1 - i]]; });
+for (const [f, b] of Object.entries({ ך: 'כ', ם: 'מ', ן: 'נ', ף: 'פ', ץ: 'צ' })) ATBASH[f] = ATBASH[b];
+const ATBASH_BODY = `var AV=${JSON.stringify(ATBASH)}; var t=String(text), n=0; for (var i=0;i<t.length;i++) n+=AV[t[i]]||0; return n;`;
 let highlightValue: number | null = null;
 
 function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {
@@ -184,7 +191,10 @@ export default definePlugin({
 
     // Extend the Code page through its published API: the SQL gematria(text) function + sample queries.
     const code = codePageApi(ctx);
-    code.registerFns([{ name: 'gematria', args: ['text'], body: GEMATRIA_BODY }]);
+    code.registerFns([
+      { name: 'gematria', args: ['text'], body: GEMATRIA_BODY },
+      { name: 'atbash', args: ['text'], body: ATBASH_BODY },
+    ]);
     code.registerSample({
       id: 'gematria:verse',
       label: 'Verse gematria (Genesis 1)',
@@ -290,6 +300,18 @@ WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') A
   AND gematria(word.value) = 376
 GROUP BY letters(word.value)
 ORDER BY occurrences DESC;`,
+    });
+    code.registerSample({
+      id: 'gematria:atbash',
+      label: 'Atbash gematria (each word, vs. standard)',
+      sql: `-- Atbash swaps every letter with its mirror across the alef-bet (א↔ת, ב↔ש, …); gematria_atbash(text) sums
+-- those mirrored letters. Here is each word of Genesis 1:1 with its plain and atbash gematria side by side. To
+-- SEARCH by atbash instead, filter — e.g. add WHERE gematria_atbash(word.value) = 174 (= the atbash of תורה).
+SELECT word.value AS word, gematria(word.value) AS gematria, gematria_atbash(word.value) AS atbash
+FROM content c
+  JOIN editions e ON e.id = c.edition_id
+  JOIN json_each(words(c.text)) AS word
+WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang = 'he';`,
     });
   },
 });

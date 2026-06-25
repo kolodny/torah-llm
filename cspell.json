@@ -65,7 +65,15 @@
     "wval",
     "capi",
     "autoincrement",
-    "Turim"
+    "Turim",
+    "atbash",
+    "shatnez",
+    "hapax",
+    "legomena",
+    "anagram",
+    "anagrams",
+    "pesukim",
+    "pasuk"
   ],
   "ignoreRegExpList": [
     "/[\\u0590-\\u05FF\\uFB1D-\\uFB4F]+/g"
