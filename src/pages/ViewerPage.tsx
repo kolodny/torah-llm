@@ -499,7 +499,7 @@ export default function ViewerPage() {
       {isDesktop ? (
         hasSidebar ? aside : null
       ) : (
-        <Drawer opened={state.asideOpen && hasSidebar} onClose={() => dispatch({ type: 'setAside', open: false })} position="right" size="92%" title="Panels" padding={0} zIndex={350} classNames={{ body: 'aside-drawer-body' }}>
+        <Drawer opened={state.asideOpen && hasSidebar} onClose={() => dispatch({ type: 'setAside', open: false })} position="right" size="92%" title="Panels" padding={0} zIndex={350} classNames={{ content: 'aside-drawer-content', body: 'aside-drawer-body' }}>
           {aside}
         </Drawer>
       )}

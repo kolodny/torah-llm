@@ -490,9 +490,12 @@ mark.gematria-hit { background: #ffe08a; border-radius: 3px; padding: 0 1px; box
 /* mobile, no book yet: the catalog renders inline (full-width, scrollable) instead of the empty reader */
 .viewer-page.mobile > .catalog { height: 100%; overflow: auto; padding: 12px 16px; background: var(--panel); border: 0; }
 .aside-fab { position: fixed; right: 16px; bottom: 16px; z-index: 360; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }
-/* the right-rail fills its drawer (no fixed flex-basis / border when drawer-hosted) */
-.aside-drawer-body { padding: 0 !important; }
-.aside-drawer-body .viewer-side { height: 100%; border: 0; flex: 1 1 auto; }
+/* the right-rail fills its drawer (no fixed flex-basis / border when drawer-hosted). The Mantine drawer content
+   isn't a flex column by default, so the body collapsed to the tab-bar height and .viewer-side-body (flex:1 1 0)
+   clipped the peek to 0 — tabs visible, body blank. Force content→column and let the body fill. */
+.aside-drawer-content { display: flex; flex-direction: column; }
+.aside-drawer-body { padding: 0 !important; flex: 1 1 auto !important; min-height: 0; display: flex; flex-direction: column; }
+.aside-drawer-body .viewer-side { border: 0; flex: 1 1 auto; min-height: 0; }
 
 .storage-page { height: calc(100vh - 56px); display: flex; flex-direction: column; padding: 16px 22px; }
 .storage-tree { flex: 1 1 0; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
