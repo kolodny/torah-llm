@@ -167,6 +167,18 @@ function openConnection() {
   }
 }
 
+// A freshly downloaded catalog is a 4 KB-page db (better-sqlite3's default). Re-page it to 64 KB while it's
+// still just the small catalog — before any book is merged in. ensureBook's merges scatter writes across the
+// links indexes' B-tree pages; at 64 KB that's ~16x fewer OPFS page-writes per book, which is ~3x faster on
+// the slow per-op OPFS of non-persistent storage (incognito) and Firefox. The VACUUM is negligible here (the
+// catalog is tiny) and is a no-op once slices ship at 64 KB. Only ever runs on a FRESH boot — never re-pages
+// an existing (possibly multi-GB) cache.
+function repageTo64k() {
+  if (pragmaInt('page_size') === 65536) return;
+  db.exec('PRAGMA page_size=65536');
+  db.exec('VACUUM');
+}
+
 // Open the connection and, the FIRST time this session, bring the cache current (migrate in place +
 // reconcile against the manifest). Self-heals a corrupt cache by wiping + re-streaming the catalog.
 async function bootSequence() {
@@ -178,6 +190,7 @@ async function bootSequence() {
   try {
     if (fresh) await streamInto(pool, BOOT_PATH, bootUrl);
     openConnection();
+    if (fresh) repageTo64k();
     if (!fresh) migrateContent();
     await reconcile(pool, fresh);
   } catch (e) {
@@ -195,6 +208,7 @@ async function bootSequence() {
     await pool.wipeFiles();
     await streamInto(pool, BOOT_PATH, bootUrl);
     openConnection();
+    repageTo64k();
     await reconcile(pool, true);
   }
   booted = true;
