@@ -141,7 +141,8 @@ async function streamInto(pool: any, path: string, url: string, onProgress?: (p:
 // back-to-back queries don't thrash pause/unpause. release() (called by the page on visibilitychange→
 // hidden / pagehide / freeze) drops the lease immediately so an inactive tab holds no OPFS handles.
 const LEASE_IDLE_MS = 600;
-let booted = false; // first-boot work (download / migrate / reconcile) done this session
+let booted = false; // first-boot work (download / migrate) done this session
+let catalogReconciled = false; // background catalog reconcile (manifest check / refresh) done this session
 let leaseHeld = false; // lock held + pool unpaused + db open
 let leaseDepth = 0; // in-flight operations — never release mid-op
 let acquiring: Promise<void> | null = null;
@@ -188,11 +189,18 @@ async function bootSequence() {
   }
   const fresh = !pool.getFileNames().includes(BOOT_PATH);
   try {
-    if (fresh) await streamInto(pool, BOOT_PATH, bootUrl);
-    openConnection();
-    if (fresh) repageTo64k();
-    if (!fresh) migrateContent();
-    await reconcile(pool, fresh);
+    if (fresh) {
+      await streamInto(pool, BOOT_PATH, bootUrl);
+      openConnection();
+      repageTo64k();
+      await reconcile(pool, true); // fresh: the db IS this snapshot — reconcile just records its publishId (cheap)
+    } else {
+      // A cached catalog is a complete, valid published snapshot, so render it IMMEDIATELY — never block boot
+      // (hence the first getToc) on the network. reconcile() runs later in the BACKGROUND via reconcileCatalog()
+      // (the client kicks it off after first paint); on slow/bad service the cached catalog still shows at once.
+      openConnection();
+      migrateContent();
+    }
   } catch (e) {
     // Only an EXISTING cached db is repaired by wipe + re-stream. A freshly downloaded catalog that's already
     // corrupt would just re-download the same bad file (and wiping a cache on a transient bad fetch is wrong),
@@ -536,6 +544,25 @@ const api = {
   release() {
     releaseWanted = true;
     if (leaseDepth === 0) releaseLease();
+  },
+
+  /** Background catalog refresh: check the manifest and, if a new publish shipped, re-merge the catalog spine.
+   *  The cached catalog already rendered, so this runs OFF the boot path (the client calls it after first paint)
+   *  — slow/bad service never gates the UI. Runs once per worker session; returns true if the catalog changed
+   *  (so the client can re-read the TOC) and false on no-change / offline / a failed refresh (keep the cache). */
+  async reconcileCatalog() {
+    if (catalogReconciled) return false;
+    catalogReconciled = true;
+    return withLease(async () => {
+      const before = scalar(`SELECT value FROM cache_meta WHERE key = 'publishId'`);
+      try {
+        await reconcile(pool, false);
+      } catch (e) {
+        console.warn('[db] background catalog reconcile failed — keeping cached catalog', e);
+        return false;
+      }
+      return scalar(`SELECT value FROM cache_meta WHERE key = 'publishId'`) !== before;
+    });
   },
 
   /** Run SQL; returns rows as objects (empty for non-SELECT). */
