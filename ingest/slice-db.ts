@@ -26,8 +26,17 @@ const root = resolve(import.meta.dirname, '..');
 const masterPath = process.env.MASTER ? resolve(process.env.MASTER) : resolve(root, 'data', 'master.sqlite');
 const outDir = process.env.OUT ? resolve(process.env.OUT) : resolve(root, 'public', 'db');
 // Per-book slices are write-once transport: their rows are merged into the client cache (which keeps its own
-// indexes) on download, so a slice's own indexes are never queried. Ship slices index-free to save ~10%.
-const SLICE_SCHEMA = SCHEMA_SQL.split('\n').filter((l) => !/CREATE (UNIQUE )?INDEX/i.test(l)).join('\n');
+// constraints + indexes) on download, so a slice's own indexes are never queried. Ship slices TRULY
+// index-free: strip explicit CREATE INDEX *and* the inline UNIQUE(...) table constraints — the latter create
+// big auto-indexes (links' UNIQUE(from_id,from_ref,to_id,to_ref) alone is ~9.6 MB of a 22 MB Genesis slice).
+// The master has no duplicate rows, so the slice needs no UNIQUE to dedup; the client's main DB keeps the
+// constraints/indexes that queries (and the INSERT OR IGNORE merge) rely on. We drop the comma + the
+// UNIQUE(...) clause together so each CREATE TABLE stays valid SQL.
+const SLICE_SCHEMA = SCHEMA_SQL
+  .split('\n')
+  .filter((l) => !/CREATE (UNIQUE )?INDEX/i.test(l))
+  .join('\n')
+  .replace(/,\s*UNIQUE\s*\([^)]*\)/gi, '');
 const attach = (p: string) => `ATTACH DATABASE '${p.replace(/'/g, "''")}' AS master`;
 
 if (!BOOT_ONLY) rmSync(outDir, { recursive: true, force: true });
