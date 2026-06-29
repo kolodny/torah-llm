@@ -230,26 +230,29 @@ ORDER BY a.val DESC;`,
       id: 'gematria:rashi',
       label: 'A word in a verse ↔ a word in its Rashi (equal gematria)',
       sql: `-- A word in a verse and a word in the Rashi ON that very verse that share a gematria — Rashi's own wordplay
--- surfaces (e.g. Genesis 30:8: נִפְתַּלְתִּי ↔ Rashi's נִתְפַּלְתִּי, both 970). vw = verse words; rw = Rashi words tagged
--- with the verse they comment on (the Rashi ref "ch:verse:n" → "ch:verse"). Join on the same verse + equal
--- gematria, dropping the trivially-repeated lemma (rw.lw <> vw.lw). Needs the matching "Rashi on <book>"
--- downloaded; verses come from your selected books.
+-- surfaces (e.g. Genesis 30:8: נִפְתַּלְתִּי ↔ Rashi's נִתְפַּלְתִּי, both 970; Deut 7:13 וְעַשְׁתְּרֹת ↔ עַשְׁתָּרוֹת). Each
+-- side is collapsed to DISTINCT consonant-forms per verse (≥4 letters — skips tiny common words and keeps it
+-- fast), tagged with the verse it's on (Rashi ref "ch:verse:n" → "ch:verse"), then joined on the same verse +
+-- equal gematria, dropping the repeated lemma (rw.lw <> vw.lw). BOTH sides are scoped to your selected books —
+-- needs the matching "Rashi on <book>" downloaded.
 WITH
   vw AS MATERIALIZED (
-    SELECT c.toc_id AS book, c.ref AS vref, letters(w.value) AS lw, w.value AS word, gematria(w.value) AS g
+    SELECT c.toc_id AS book, c.ref AS vref, letters(w.value) AS lw, gematria(w.value) AS g, min(w.value) AS word
     FROM content c JOIN editions e ON e.id = c.edition_id JOIN json_each(words(c.text)) AS w
-    WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he' AND gematria(w.value) > 0
+    WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he' AND length(letters(w.value)) >= 4
+    GROUP BY c.toc_id, c.ref, letters(w.value)
   ),
   rw AS MATERIALIZED (
     SELECT replace(c.toc_id, 'Rashi on ', '') AS book,
-           evalJS('value.split(":").slice(0, 2).join(":")', c.ref) AS vref,
-           letters(w.value) AS lw, w.value AS word, gematria(w.value) AS g
+           substr(c.ref, 1, instr(c.ref, ':') + instr(substr(c.ref, instr(c.ref, ':') + 1), ':') - 1) AS vref,
+           letters(w.value) AS lw, gematria(w.value) AS g, min(w.value) AS word
     FROM content c JOIN editions e ON e.id = c.edition_id JOIN json_each(words(c.text)) AS w
-    WHERE c.toc_id LIKE 'Rashi on %' AND e.lang = 'he' AND gematria(w.value) > 0
+    WHERE c.toc_id LIKE 'Rashi on %' AND e.lang = 'he'
+      AND replace(c.toc_id, 'Rashi on ', '') IN SELECTED AND length(letters(w.value)) >= 4
+    GROUP BY c.toc_id, substr(c.ref, 1, instr(c.ref, ':') + instr(substr(c.ref, instr(c.ref, ':') + 1), ':') - 1), letters(w.value)
   )
 SELECT vw.book, link(vw.book, vw.vref) AS verse, vw.word AS verse_word, rw.word AS rashi_word, vw.g AS gematria
 FROM vw JOIN rw ON rw.book = vw.book AND rw.vref = vw.vref AND rw.g = vw.g AND rw.lw <> vw.lw
-GROUP BY vw.book, vw.vref, vw.lw, rw.lw
 ORDER BY vw.g DESC
 LIMIT 500;`,
     });
