@@ -475,7 +475,11 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
       </Group>
       {err && <Text c="red" mt="sm" style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>{err}</Text>}
       {rows && rows.length > 0 && <ResultsTable rows={rows} ctx={ctx} renderers={renderers} />}
-      {rows && rows.length === 0 && !err && <Text c="dimmed" mt="sm">No rows. (Download books in the Storage tab if a table is empty.)</Text>}
+      {rows && rows.length === 0 && !err && (
+        <Text c="dimmed" mt="sm">
+          No rows. Samples search your <b>scope</b> ({selectedBooks.size} book{selectedBooks.size === 1 ? '' : 's'}: {[...selectedBooks].slice(0, 5).join(', ')}{selectedBooks.size > 5 ? '…' : ''}) — make sure those books are <b>downloaded in the Storage tab</b>, or change the scope above.
+        </Text>
+      )}
     </div>
   );
 }

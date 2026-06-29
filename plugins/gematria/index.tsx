@@ -254,6 +254,21 @@ ORDER BY vw.g DESC
 LIMIT 500;`,
     });
     code.registerSample({
+      id: 'gematria:rashi-cites',
+      label: "Where Rashi himself cites a gematria",
+      sql: `-- The famous places where Rashi invokes a gematria: אֱלִיעֶזֶר = 318 (Genesis 14:14, "מנין גימטריא של שמו"),
+-- בַּכֹּל = בֵּן (Genesis 24:1), גַּרְתִּי = תרי"ג / 613 (Genesis 32:5), … Finds Rashi comments whose text mentions
+-- גימטריא, on your selected books. Needs the matching "Rashi on <book>" downloaded (Storage tab).
+SELECT replace(c.toc_id, 'Rashi on ', '') AS book,
+       link(replace(c.toc_id, 'Rashi on ', ''), evalJS('value.split(":").slice(0, 2).join(":")', c.ref)) AS verse,
+       substr(strip(c.text), 1, 160) AS rashi
+FROM content c JOIN editions e ON e.id = c.edition_id
+WHERE c.toc_id LIKE 'Rashi on %' AND e.lang = 'he'
+  AND replace(c.toc_id, 'Rashi on ', '') IN SELECTED
+  AND strip(c.text) LIKE '%גימטרי%'
+ORDER BY c.toc_id, c.ref;`,
+    });
+    code.registerSample({
       id: 'gematria:verse-equals-word',
       label: 'Any verse whose gematria equals a single word',
       sql: `-- Every verse whose ENTIRE gematria equals that of one or more single Hebrew words — one row per verse, with
