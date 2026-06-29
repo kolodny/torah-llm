@@ -8,6 +8,7 @@ dist
 # (the source versions to build from are pinned in sources.lock.json, which IS committed).
 /data
 /public/db
+/public/plugins
 *.sqlite
 
 # playwright e2e artifacts

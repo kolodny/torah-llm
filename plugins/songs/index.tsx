@@ -2,7 +2,8 @@
 // (Placeholder data: a real version would query a songs dataset keyed by ref/phrase.)
 import { useEffect, useState } from 'react';
 import { Text, Anchor } from '@mantine/core';
-import { definePlugin, type LinkInfo, type PluginContext } from '../../src/plugins/types';
+import type { LinkInfo, PluginContext } from '../../src/plugins/Plugin.type';
+const { definePlugin } = window.__torahRuntime.sdk;
 
 let target: LinkInfo['to'] | null = null;
 const subs = new Set<() => void>();
@@ -39,8 +40,8 @@ function SongsPanel({ ctx }: { ctx: PluginContext }) {
 export default definePlugin({
   manifest: { id: 'songs', name: 'Songs', version: '3.0.0', apiVersion: '^1', permissions: [], activationEvents: ['onBook:*'], description: 'Find musical settings of a linked passage.' },
   activate(ctx) {
-    ctx.contribute('viewer', 'sidebar', { id: 'songs', title: 'Songs', render: () => <SongsPanel ctx={ctx} /> });
-    ctx.contribute('viewer', 'linkAction', {
+    ctx.viewer.addSidebar({ id: 'songs', title: 'Songs', render: () => <SongsPanel ctx={ctx} /> });
+    ctx.viewer.addLinkAction({
       id: 'songs.view',
       label: '♪ Songs',
       run: (link: LinkInfo) => {

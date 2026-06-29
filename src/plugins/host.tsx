@@ -3,7 +3,7 @@
 // contribute into page slots. UI/navigation route through a store-backed bridge installed before
 // activation. Lifecycle is Disposable-based (HMR-safe); capabilities + lazy activation as in v2.
 
-import { useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import {
   getToc,
   getEditions,
@@ -196,6 +196,16 @@ function storageFor(pluginId: string): PluginStorage {
   };
 }
 
+// --- cross-plugin API registry (ctx.exposeApi / ctx.getApi) -----------------------------------
+// A flat name → value map. A plugin publishes a value (e.g. a page's extension-API factory) under a name;
+// any other plugin reads it by that name. Decouples consumers from the provider's module (no host involvement
+// beyond this map). An entry is removed when its publishing plugin unloads.
+let apiRegistry: Record<string, unknown> = {};
+
+// In-app URL for a verse/book — shared by ui.href and ui.linkProps.
+const viewerHref = (book: string, ref?: string | null) =>
+  `?page=viewer&book=${encodeURIComponent(book)}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`;
+
 // --- per-plugin context -----------------------------------------------------------------------
 function contextFor(manifest: PluginManifest): PluginContext {
   const subscriptions: Disposable[] = [];
@@ -217,6 +227,26 @@ function contextFor(manifest: PluginManifest): PluginContext {
     subscriptions,
     registerPage: (page) => track(registerPage(manifest.id, page)),
     contribute: (pageId, slot, contribution) => track(addSlot(pageId, slot, contribution)),
+    viewer: {
+      addSidebar: (panel) => track(addSlot('viewer', 'sidebar', panel)),
+      addVerseAction: (action) => track(addSlot('viewer', 'verseAction', action)),
+      addLinkAction: (action) => track(addSlot('viewer', 'linkAction', action)),
+      addDecoration: (provider) => track(addSlot('viewer', 'decoration', provider)),
+      addEditor: (editor) => track(addSlot('viewer', 'editor', editor)),
+      addTextSelectAction: (action) => track(addSlot('viewer', 'onTextSelect', action)),
+    },
+    exposeApi: (name, api) => {
+      apiRegistry = { ...apiRegistry, [name]: api };
+      return track({
+        dispose() {
+          if (apiRegistry[name] === api) {
+            const { [name]: _drop, ...rest } = apiRegistry;
+            apiRegistry = rest;
+          }
+        },
+      });
+    },
+    getApi: <T,>(name: string) => apiRegistry[name] as T | undefined,
     reader: {
       get current() {
         return currentReader;
@@ -238,7 +268,15 @@ function contextFor(manifest: PluginManifest): PluginContext {
       navigate: (book, ref) => bridge.navigate(book, ref),
       peek: (book, ref) => bridge.peek(book, ref),
       showToast: (m) => bridge.toast(m),
-      href: (book, ref) => `?page=viewer&book=${encodeURIComponent(book)}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`,
+      href: (book, ref) => viewerHref(book, ref),
+      linkProps: (book, ref) => ({
+        href: viewerHref(book, ref),
+        onClick: (e: ReactMouseEvent) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // let the browser open a new tab
+          e.preventDefault();
+          bridge.navigate(book, ref);
+        },
+      }),
     },
     data,
     storage,
@@ -274,6 +312,11 @@ const apiVersionOk = (range: string) => majorOf(range) === majorOf(PLATFORM_API_
 type Discovered = { plugin: Plugin; events: string[] };
 const discovered = new Map<string, Discovered>();
 const activated = new Map<string, PluginContext>();
+// Activation events that have already fired this session. External bundles load ASYNC (serial <script>
+// injection), so a plugin can be discovered AFTER its event fired (e.g. onBook:* fires when a book opens
+// from a cold deep-link, before the bundle arrives). We record fired events so late-discovered plugins
+// still activate instead of waiting for a re-fire that may never come.
+const firedEvents = new Set<string>();
 
 function activatePlugin(id: string) {
   if (activated.has(id)) return;
@@ -297,33 +340,89 @@ function activatePlugin(id: string) {
   }
 }
 
-/** Fire an activation event; any dormant plugin that declared it activates now. */
+/** Fire an activation event; any dormant plugin that declared it activates now. The event is remembered so
+ *  a plugin discovered later (async bundle) that declared it activates immediately on discovery. */
 export function fireActivation(event: string) {
+  firedEvents.add(event);
   for (const [id, d] of discovered) {
     if (!activated.has(id) && d.events.includes(event)) activatePlugin(id);
   }
 }
 
-/** Discover every plugin under /plugins/, then activate the ones whose activation events have fired. */
+// Validate + record a plugin in the registry. Shared by both load paths so a built-in (bundled) and an
+// external (runtime JS) plugin go through the exact same discovery — the single source of truth.
+function discover(plugin: Plugin | undefined, source: string): string | null {
+  if (!plugin?.manifest?.id || typeof plugin.activate !== 'function') {
+    console.warn(`[plugins] ${source}: no valid plugin (need { manifest.id, activate }) — skipped`);
+    return null;
+  }
+  const { id, apiVersion } = plugin.manifest;
+  if (discovered.has(id)) return null;
+  if (!apiVersionOk(apiVersion)) {
+    console.warn(`[plugins] "${id}" targets API ${apiVersion}; host is ${PLATFORM_API_VERSION} — skipped`);
+    return null;
+  }
+  discovered.set(id, { plugin, events: plugin.manifest.activationEvents ?? ['onStartupFinished'] });
+  return id;
+}
+
+const startupReady = (events: string[]) => events.includes('onStartupFinished') || events.includes('*');
+// Should a just-discovered plugin activate right now? — yes if it's startup-ready, or if any event it
+// declared has already fired this session (it loaded too late to catch the live fireActivation()).
+const shouldActivateOnDiscovery = (events: string[]) => startupReady(events) || events.some((e) => firedEvents.has(e));
+
+/** Register a plugin object (a plugin bundle's `export default definePlugin({…})`) — or a self-registering
+ *  bundle can call this directly. Same discovery + lazy-activation as the bundled path. Exposed on
+ *  window.__torahRuntime as registerPlugin. */
+export function registerExternalPlugin(plugin: Plugin) {
+  const id = discover(plugin, `external:${plugin?.manifest?.id ?? '?'}`);
+  if (id && shouldActivateOnDiscovery(discovered.get(id)!.events)) activatePlugin(id);
+}
+
+/** Load runtime plugin bundles listed in public/plugins/index.json by injecting each <script> (IIFE) in turn;
+ *  the bundle's default export (`window.__torahPlugin.default`) is then registered. Same path a third-party
+ *  plugin uses. Loaded serially because each IIFE writes the shared __torahPlugin global. */
+export async function loadExternalPlugins(base: string) {
+  let ids: string[] = [];
+  try {
+    const res = await fetch(`${base}plugins/index.json`, { cache: 'no-cache' });
+    if (res.ok) ids = (await res.json()) as string[];
+  } catch {
+    /* no external plugins published — fine */
+  }
+  // The IIFE assigns its `export default` to window.__torahPlugin — for a default-only bundle rollup makes
+  // that the plugin object itself; if a bundle ever has named exports it'd be { default: … }. Accept both.
+  const w = window as unknown as { __torahPlugin?: Plugin | { default?: Plugin } };
+  for (const id of ids) {
+    await new Promise<void>((resolve) => {
+      w.__torahPlugin = undefined;
+      const s = document.createElement('script');
+      s.src = `${base}plugins/${id}.js`;
+      s.onload = () => {
+        const ns = w.__torahPlugin as (Plugin & { default?: Plugin }) | undefined;
+        const plugin = ns?.default ?? ns;
+        if (plugin?.manifest) registerExternalPlugin(plugin);
+        else console.error(`[plugins] external plugin "${id}" has no default export`);
+        resolve();
+      };
+      s.onerror = () => {
+        console.error(`[plugins] failed to load external plugin "${id}"`);
+        resolve();
+      };
+      document.head.appendChild(s);
+    });
+  }
+}
+
+/** Discover every BUILT-IN plugin under /plugins/ (bundled via glob). External plugins load separately via
+ *  loadExternalPlugins(). Both end at the same discover()/activatePlugin(). */
 export function loadPlugins() {
-  const mods = import.meta.glob('/plugins/*/index.{ts,tsx}', { eager: true }) as Record<string, { default?: Plugin }>;
-  for (const [path, mod] of Object.entries(mods)) {
-    const plugin = mod.default;
-    if (!plugin?.manifest?.id || typeof plugin.activate !== 'function') {
-      console.warn(`[plugins] ${path}: no valid default export — skipped`);
-      continue;
-    }
-    const { id, apiVersion } = plugin.manifest;
-    if (discovered.has(id)) continue;
-    if (!apiVersionOk(apiVersion)) {
-      console.warn(`[plugins] "${id}" targets API ${apiVersion}; host is ${PLATFORM_API_VERSION} — skipped`);
-      continue;
-    }
-    discovered.set(id, { plugin, events: plugin.manifest.activationEvents ?? ['onStartupFinished'] });
-  }
-  for (const [id, d] of discovered) {
-    if (d.events.includes('onStartupFinished') || d.events.includes('*')) activatePlugin(id);
-  }
+  // code-search stays bundled (it pulls in Monaco, which doesn't make a clean standalone IIFE). Every OTHER
+  // plugin is built to public/plugins/<id>.js and loaded by loadExternalPlugins() — the same path third-party
+  // plugins use. Both end at the same discover()/activatePlugin().
+  const mods = import.meta.glob('/plugins/code-search/index.{ts,tsx}', { eager: true }) as Record<string, { default?: Plugin }>;
+  for (const [path, mod] of Object.entries(mods)) discover(mod.default, path);
+  for (const [id, d] of discovered) if (startupReady(d.events)) activatePlugin(id);
 }
 
 export function unloadAll() {
@@ -347,7 +446,10 @@ export function PluginProvider({ children }: { children: ReactNode }) {
   bridge.peek = (b, r) => dispatch({ type: 'peek', book: b, ref: r });
   bridge.toast = (m) => dispatch({ type: 'toast', message: m });
 
-  useMemo(() => loadPlugins(), []);
+  useMemo(() => {
+    loadPlugins(); // built-in (bundled) plugins
+    void loadExternalPlugins(import.meta.env.BASE_URL); // runtime .js bundles (same path third-party plugins use)
+  }, []);
   useEffect(() => fireActivation(`onPage:${state.page}`), [state.page]);
 
   return <>{children}</>;
@@ -364,6 +466,8 @@ if (import.meta.hot) {
     pages = [];
     pageOwners.clear();
     slots = {};
+    apiRegistry = {};
+    firedEvents.clear();
     resetBus();
     notify();
   });

@@ -1,6 +1,8 @@
-// The Code page's extension API. Other plugins import this to extend the SQL workbench — the page owns the
-// contract (slot names + types); core stays generic (it only knows about contribute()/useSlot()/data). Any
-// page can follow this same pattern: export a `<page>Api(ctx)` factory + its contribution types.
+// The Code page's extension API. The code-search plugin PUBLISHES the codePageApi factory via
+// ctx.exposeApi(CODE_PAGE_ID, codePageApi); other plugins acquire it with
+// ctx.getApi<CodePageApiFactory>(CODE_PAGE_ID)?.(ctx) and only type-import from here (no module coupling).
+// The page owns the contract (slot names + types); core stays generic (contribute()/useSlot()/data). Any page
+// can follow this pattern: a `<page>Api(ctx)` factory + its contribution types, exposed under a name.
 import type { ReactNode } from 'react';
 import type { Contribution, Disposable, PluginContext, SqlFnSpec } from '../../src/plugins/types';
 
@@ -21,6 +23,9 @@ export type CodePageApi = {
   /** Add a query to the sample dropdown. */
   registerSample(sample: CodeSample): Disposable;
 };
+
+/** The shape published under getApi(CODE_PAGE_ID): call it with YOUR ctx to extend the Code page. */
+export type CodePageApiFactory = (ctx: PluginContext) => CodePageApi;
 
 export function codePageApi(ctx: PluginContext): CodePageApi {
   return {

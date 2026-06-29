@@ -6,7 +6,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { Select, Button, Group, Stack, Text, Anchor } from '@mantine/core';
-import { definePlugin, type PluginContext } from '../../src/plugins/types';
+import type { PluginContext } from '../../src/plugins/Plugin.type';
+const { definePlugin } = window.__torahRuntime.sdk;
 
 const ALEPH_BET = 'אבגדהוזחטיכלמנסעפצקרשת'.split('');
 // Pesukim end in final letter-forms; the picker shows base letters, so accept the final form too.
@@ -136,16 +137,7 @@ function PasukNamePage({ ctx }: { ctx: PluginContext }) {
             </Text>
             <Stack gap={2}>
               {g.items.map((h) => (
-                <Anchor
-                  key={h.ref}
-                  href={ctx.ui.href(h.book, h.ref)}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                    e.preventDefault();
-                    ctx.ui.navigate(h.book, h.ref);
-                  }}
-                  c="inherit"
-                >
+                <Anchor key={h.ref} {...ctx.ui.linkProps(h.book, h.ref)} c="inherit">
                   <span className="comm-ref">{h.ref}</span> <span dir="rtl" style={{ marginInlineStart: 8 }}>{h.preview}</span>
                 </Anchor>
               ))}

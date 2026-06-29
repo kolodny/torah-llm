@@ -6,7 +6,8 @@
 //     the text, then read a pasuk centered with your chosen sources fetched + laid around it.
 // Self-fetches via ctx.data (data:read); dormant until a book opens (onBook:*).
 import { useEffect, useMemo, useState } from 'react';
-import { definePlugin, type BookView, type PluginContext, type ReaderContext, type EditorProps } from '../../src/plugins/types';
+import type { BookView, PluginContext, ReaderContext, EditorProps } from '../../src/plugins/Plugin.type';
+const { definePlugin } = window.__torahRuntime.sdk;
 
 const RTL = /^(he|arc|yi)/;
 // Strip tags AND decode HTML entities (e.g. &thinsp;) into real text via the DOM — so the columns show
@@ -449,14 +450,14 @@ export default definePlugin({
     activationEvents: ['onBook:*'], // reading modes only matter once a book is open
   },
   activate(ctx) {
-    ctx.contribute('viewer', 'editor', {
+    ctx.viewer.addEditor({
       id: 'tikkun',
       title: 'Tikkun',
       icon: '📜',
       canRender: (reader: ReaderContext) => (reader.book && reader.editions.some((e) => RTL.test(e.lang)) ? 70 : 0),
       render: ({ view }: EditorProps) => <TikkunReader view={view} ctx={ctx} />,
     });
-    ctx.contribute('viewer', 'editor', {
+    ctx.viewer.addEditor({
       id: 'mikraot-gedolot',
       title: 'Mikraot Gedolot',
       managesOwnScroll: true, // renders a single focused pasuk → host must not drive infinite-scroll sentinels

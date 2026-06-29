@@ -5,6 +5,11 @@ import { MantineProvider, createTheme } from '@mantine/core';
 import '@mantine/core/styles.css';
 import App from './App';
 import { WorkbenchProvider } from './workbench/store';
+import { installPluginRuntime } from './plugins/runtime';
+
+// Expose the host's React/Mantine/router + plugin SDK on window.__torahRuntime before anything loads external
+// plugin bundles, so each plugin binds to the host's single instance (see PLUGINS.md).
+installPluginRuntime();
 
 // Ask the browser to make our storage persistent so the downloaded corpus (SQLite-WASM over OPFS) isn't
 // evicted when disk runs low. Browsers grant this readily once the app is installed as a PWA.

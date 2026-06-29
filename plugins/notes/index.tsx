@@ -2,7 +2,8 @@
 // verses that have notes. Uses persistent plugin-scoped storage.
 import { useEffect, useState } from 'react';
 import { Text, Stack, Anchor, Checkbox, Group, ActionIcon } from '@mantine/core';
-import { definePlugin, type PluginContext, type ReaderContext, type Decoration, type Verse, type Segment } from '../../src/plugins/types';
+import type { PluginContext, ReaderContext, Decoration, Verse, Segment } from '../../src/plugins/Plugin.type';
+const { definePlugin } = window.__torahRuntime.sdk;
 
 type Note = { book: string; ref: string; body: string; at: number };
 const keyOf = (n: Note) => `note:${n.book} ${n.ref} ${n.at}`;
@@ -55,15 +56,7 @@ function NotesPanel({ ctx }: { ctx: PluginContext }) {
         {shown.map(({ key, note }) => (
           <div key={key}>
             <Group justify="space-between" wrap="nowrap">
-              <Anchor
-                size="sm"
-                href={ctx.ui.href(note.book, note.ref)}
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                  e.preventDefault();
-                  ctx.ui.navigate(note.book, note.ref);
-                }}
-              >
+              <Anchor size="sm" {...ctx.ui.linkProps(note.book, note.ref)}>
                 {note.book} <span className="comm-ref">{note.ref}</span>
               </Anchor>
               <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Delete note" onClick={async () => { await ctx.storage.delete(key); await refreshNotes(ctx); }}>×</ActionIcon>
@@ -80,7 +73,7 @@ export default definePlugin({
   manifest: { id: 'notes', name: 'Notes', version: '3.0.0', apiVersion: '^1', permissions: ['storage'], activationEvents: ['onBook:*'], description: 'Personal notes attached to verses.' },
   activate(ctx) {
     void refreshNotes(ctx);
-    ctx.contribute('viewer', 'verseAction', {
+    ctx.viewer.addVerseAction({
       id: 'notes.add',
       label: 'Add note',
       icon: '📝',
@@ -93,8 +86,8 @@ export default definePlugin({
         ctx.ui.showToast('Note saved');
       },
     });
-    ctx.contribute('viewer', 'sidebar', { id: 'notes', title: 'Notes', render: () => <NotesPanel ctx={ctx} /> });
-    ctx.contribute('viewer', 'decoration', {
+    ctx.viewer.addSidebar({ id: 'notes', title: 'Notes', render: () => <NotesPanel ctx={ctx} /> });
+    ctx.viewer.addDecoration({
       id: 'notes.pins',
       provide: (seg: Segment): Decoration[] => {
         if (seg.primary === false) return []; // render the pin once per verse (on the first column), not per edition

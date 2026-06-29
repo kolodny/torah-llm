@@ -1,7 +1,8 @@
 // Search — a viewer sidebar that finds a phrase in the current book and jumps to a hit.
 import { useEffect, useState, type FormEvent } from 'react';
 import { TextInput, Text, Stack, Anchor } from '@mantine/core';
-import { definePlugin, type PluginContext, type ReaderContext } from '../../src/plugins/types';
+import type { PluginContext, ReaderContext } from '../../src/plugins/Plugin.type';
+const { definePlugin } = window.__torahRuntime.sdk;
 
 const strip = (html: string) => html.replace(/<[^>]+>/g, '');
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -64,17 +65,7 @@ function SearchPanel({ ctx }: { ctx: PluginContext }) {
       {ran && !busy && !notDownloaded && <Text c="dimmed" size="sm" mt="xs">{rows.length} match{rows.length === 1 ? '' : 'es'}</Text>}
       <Stack gap={4} mt="xs">
         {rows.map((r, i) => (
-          <Anchor
-            key={`${r.ref}:${i}`}
-            c="inherit"
-            href={reader.book ? ctx.ui.href(reader.book, r.ref) : undefined}
-            onClick={(e) => {
-              if (!reader.book) return;
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-              e.preventDefault();
-              ctx.ui.navigate(reader.book, r.ref);
-            }}
-          >
+          <Anchor key={`${r.ref}:${i}`} c="inherit" {...(reader.book ? ctx.ui.linkProps(reader.book, r.ref) : {})}>
             <span className="comm-ref">{r.ref}</span> <span dangerouslySetInnerHTML={{ __html: snippet(r.text, q.trim()) }} />
           </Anchor>
         ))}
@@ -86,6 +77,6 @@ function SearchPanel({ ctx }: { ctx: PluginContext }) {
 export default definePlugin({
   manifest: { id: 'search', name: 'Search', version: '3.0.0', apiVersion: '^1', permissions: ['data:read'], activationEvents: ['onBook:*'], description: 'Find a phrase in the current book.' },
   activate(ctx) {
-    ctx.contribute('viewer', 'sidebar', { id: 'search', title: 'Search', render: () => <SearchPanel ctx={ctx} /> });
+    ctx.viewer.addSidebar({ id: 'search', title: 'Search', render: () => <SearchPanel ctx={ctx} /> });
   },
 });

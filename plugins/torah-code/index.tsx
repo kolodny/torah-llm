@@ -2,9 +2,9 @@
 // goes through the Code page's published API (codePageApi) — no core/page code knows about torah codes.
 import { useEffect, useMemo, useState } from 'react';
 import { Loader, Text } from '@mantine/core';
-import { definePlugin, type PluginContext } from '../../src/plugins/types';
-import { stripHtml } from '../../shared/strip';
-import { codePageApi } from '../code-search/api';
+import type { PluginContext } from '../../src/plugins/Plugin.type';
+import { CODE_PAGE_ID, type CodePageApiFactory } from '../code-search/api';
+const { definePlugin, util: { stripHtml } } = window.__torahRuntime.sdk;
 
 // torah_code_find(text, word [, maxSkip] [, minSkip]) — find the smallest-skip ELS of <word> in skip range
 // [minSkip, maxSkip]; returns a JSON handle
@@ -194,15 +194,7 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
                 <td className="rowlabel" title={label}>{label}</td>
                 {cells.map((cell) => (
                   <td key={cell.i} className={cell.hit ? 'hit' : undefined}>
-                    <a
-                      href={`?page=viewer&book=${encodeURIComponent(cell.book)}&ref=${encodeURIComponent(cell.ref)}`}
-                      title={`${cell.book} ${cell.ref}`}
-                      onClick={(e) => {
-                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                        e.preventDefault();
-                        ctx.ui.navigate(cell.book, cell.ref);
-                      }}
-                    >
+                    <a {...ctx.ui.linkProps(cell.book, cell.ref)} title={`${cell.book} ${cell.ref}`}>
                       {cell.ch}
                     </a>
                   </td>
@@ -226,7 +218,9 @@ export default definePlugin({
     description: 'ELS (torah code) matrix renderer + torah_code_find() for the Code page.',
   },
   activate(ctx) {
-    const code = codePageApi(ctx);
+    // The Code page's published API (registered by code-search) — absent if that plugin isn't loaded.
+    const code = ctx.getApi<CodePageApiFactory>(CODE_PAGE_ID)?.(ctx);
+    if (!code) return;
     code.registerFns([{ name: 'find', args: ['text', 'word', 'maxSkip', 'minSkip'], body: FIND_BODY }]);
     code.registerRenderer({ id: 'torah-code', render: (a: unknown[]) => <TorahCodeMatrix args={a} ctx={ctx} /> });
     code.registerSample({

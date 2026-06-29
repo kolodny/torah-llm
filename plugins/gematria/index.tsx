@@ -6,10 +6,9 @@
 //   • the Code page's SQL gematria(text) function + gematria sample queries
 import { useEffect, useState, type FormEvent } from 'react';
 import { TextInput, SegmentedControl, Button, Group, Stack, Text, Anchor, ScrollArea, Badge } from '@mantine/core';
-import { definePlugin, type PluginContext, type Decoration, type Verse, type Segment, type TextSelection } from '../../src/plugins/types';
-import type { TocRow } from '../../src/db/types';
-import { BookCheckTree } from '../../src/components/BookTree';
-import { codePageApi } from '../code-search/api';
+import type { PluginContext, Decoration, Verse, Segment, TextSelection, TocRow } from '../../src/plugins/Plugin.type';
+import { CODE_PAGE_ID, type CodePageApiFactory } from '../code-search/api';
+const { definePlugin, components: { BookCheckTree } } = window.__torahRuntime.sdk;
 
 const VALUE: Record<string, number> = {
   א: 1, ב: 2, ג: 3, ד: 4, ה: 5, ו: 6, ז: 7, ח: 8, ט: 9,
@@ -138,16 +137,7 @@ function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {
       )}
       <Stack gap={4} mt="xs">
         {hits.map((h, i) => (
-          <Anchor
-            key={`${h.book}:${h.ref}:${i}`}
-            href={ctx.ui.href(h.book, h.ref)}
-            onClick={(e) => {
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-              e.preventDefault();
-              ctx.ui.navigate(h.book, h.ref);
-            }}
-            c="inherit"
-          >
+          <Anchor key={`${h.book}:${h.ref}:${i}`} {...ctx.ui.linkProps(h.book, h.ref)} c="inherit">
             <span className="comm-ref">{h.book} {h.ref}</span> <span dir="rtl" className="plugin-gem-hit">{h.text}</span>
           </Anchor>
         ))}
@@ -166,14 +156,14 @@ export default definePlugin({
     description: 'Gematria of selected text, per verse, highlight, and a search page.',
   },
   activate(ctx) {
-    ctx.contribute('viewer', 'onTextSelect', {
+    ctx.viewer.addTextSelectAction({
       id: 'gematria',
       label: (sel: TextSelection) => {
         const g = gematria(sel.text);
         return g ? `Gematria ${g.toLocaleString()}` : null;
       },
     });
-    ctx.contribute('viewer', 'verseAction', {
+    ctx.viewer.addVerseAction({
       id: 'gematria',
       label: 'Gematria',
       icon: 'א',
@@ -183,7 +173,7 @@ export default definePlugin({
         ctx.ui.showToast(`${v.book} ${v.ref} — gematria ${gematria(he ? strip(v.texts[he.id]) : '').toLocaleString()}`);
       },
     });
-    ctx.contribute('viewer', 'decoration', {
+    ctx.viewer.addDecoration({
       id: 'gematria.highlight',
       provide: (seg: Segment) => {
         if (highlightValue == null || !RTL.test(seg.lang)) return [];
@@ -198,8 +188,10 @@ export default definePlugin({
     });
     ctx.registerPage({ id: 'gematria-search', title: 'Gematria', icon: 'א', order: 10, render: () => <GematriaSearchPage ctx={ctx} /> });
 
-    // Extend the Code page through its published API: the SQL gematria(text) function + sample queries.
-    const code = codePageApi(ctx);
+    // Extend the Code page through its published API (registered by the code-search plugin): the SQL
+    // gematria(text) function + sample queries. Absent if code-search isn't loaded — degrade gracefully.
+    const code = ctx.getApi<CodePageApiFactory>(CODE_PAGE_ID)?.(ctx);
+    if (!code) return;
     code.registerFns([
       { name: 'gematria', args: ['text'], body: GEMATRIA_BODY },
       { name: 'atbash', args: ['text'], body: ATBASH_BODY },

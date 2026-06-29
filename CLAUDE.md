@@ -6,7 +6,7 @@
 (architecture, current state, conventions, the Jewish-origin-sources-only policy).
 
 Every substantial workload, decision, or milestone gets its own **self-contained**
-`LLM/NNN.short-name.md` entry (NNN = the next number; the log currently runs through 032). After
+`LLM/NNN.short-name.md` entry (NNN = the next number after the highest entry already in `LLM/`). After
 adding one, update `0.index.md`:
 
 - add a row to the **Items** table, and
