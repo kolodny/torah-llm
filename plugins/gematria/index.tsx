@@ -138,7 +138,16 @@ function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {
       )}
       <Stack gap={4} mt="xs">
         {hits.map((h, i) => (
-          <Anchor key={`${h.book}:${h.ref}:${i}`} onClick={() => ctx.ui.navigate(h.book, h.ref)} c="inherit">
+          <Anchor
+            key={`${h.book}:${h.ref}:${i}`}
+            href={ctx.ui.href(h.book, h.ref)}
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+              e.preventDefault();
+              ctx.ui.navigate(h.book, h.ref);
+            }}
+            c="inherit"
+          >
             <span className="comm-ref">{h.book} {h.ref}</span> <span dir="rtl" className="plugin-gem-hit">{h.text}</span>
           </Anchor>
         ))}
@@ -219,24 +228,30 @@ ORDER BY a.val DESC;`,
     });
     code.registerSample({
       id: 'gematria:rashi',
-      label: 'Verse ↔ Rashi with equal gematria (any book)',
-      sql: `-- A base verse and a Rashi comment (on that same book) that happen to share a gematria. Not Genesis-bound:
--- the join keys off the "Rashi on <book>" relationship, so it covers every book whose Rashi you've downloaded.
-WITH rashi AS MATERIALIZED (
-  SELECT replace(c.toc_id, 'Rashi on ', '') AS book, c.ref, gematria(c.text) AS val
-  FROM content c JOIN editions e ON e.id = c.edition_id
-  WHERE c.toc_id LIKE 'Rashi on %' AND e.lang = 'he'
-),
-verse AS MATERIALIZED (
-  SELECT c.toc_id AS book, c.ref, gematria(c.text) AS val
-  FROM content c JOIN editions e ON e.id = c.edition_id
-  WHERE e.source = 'sefaria' AND e.lang = 'he'
-    AND c.toc_id IN (SELECT DISTINCT book FROM rashi)
-)
-SELECT v.book, link(v.book, v.ref) AS verse, link('Rashi on ' || v.book, r.ref) AS rashi, v.val AS gematria
-FROM verse v JOIN rashi r ON r.book = v.book AND r.val = v.val
-WHERE v.val > 100
-ORDER BY v.val DESC;`,
+      label: 'A word in a verse ↔ a word in its Rashi (equal gematria)',
+      sql: `-- A word in a verse and a word in the Rashi ON that very verse that share a gematria — Rashi's own wordplay
+-- surfaces (e.g. Genesis 30:8: נִפְתַּלְתִּי ↔ Rashi's נִתְפַּלְתִּי, both 970). vw = verse words; rw = Rashi words tagged
+-- with the verse they comment on (the Rashi ref "ch:verse:n" → "ch:verse"). Join on the same verse + equal
+-- gematria, dropping the trivially-repeated lemma (rw.lw <> vw.lw). Needs the matching "Rashi on <book>"
+-- downloaded; verses come from your selected books.
+WITH
+  vw AS MATERIALIZED (
+    SELECT c.toc_id AS book, c.ref AS vref, letters(w.value) AS lw, w.value AS word, gematria(w.value) AS g
+    FROM content c JOIN editions e ON e.id = c.edition_id JOIN json_each(words(c.text)) AS w
+    WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he' AND gematria(w.value) > 0
+  ),
+  rw AS MATERIALIZED (
+    SELECT replace(c.toc_id, 'Rashi on ', '') AS book,
+           evalJS('value.split(":").slice(0, 2).join(":")', c.ref) AS vref,
+           letters(w.value) AS lw, w.value AS word, gematria(w.value) AS g
+    FROM content c JOIN editions e ON e.id = c.edition_id JOIN json_each(words(c.text)) AS w
+    WHERE c.toc_id LIKE 'Rashi on %' AND e.lang = 'he' AND gematria(w.value) > 0
+  )
+SELECT vw.book, link(vw.book, vw.vref) AS verse, vw.word AS verse_word, rw.word AS rashi_word, vw.g AS gematria
+FROM vw JOIN rw ON rw.book = vw.book AND rw.vref = vw.vref AND rw.g = vw.g AND rw.lw <> vw.lw
+GROUP BY vw.book, vw.vref, vw.lw, rw.lw
+ORDER BY vw.g DESC
+LIMIT 500;`,
     });
     code.registerSample({
       id: 'gematria:verse-equals-word',
@@ -250,7 +265,7 @@ WITH
     SELECT word.value AS w
     FROM content c JOIN editions e ON e.id = c.edition_id
       JOIN json_each(words(c.text)) AS word
-    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+    WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
   ),
   matches AS MATERIALIZED (       -- each DISTINCT word (by consonants) and its gematria
     SELECT gematria(w) AS g, w AS word
@@ -260,7 +275,7 @@ WITH
   verses AS MATERIALIZED (        -- one row per DISTINCT verse text (verses that recur verbatim, e.g. וַיְדַבֵּר…, collapse to one)
     SELECT c.toc_id, c.ref, gematria(c.text) AS g, substr(strip(c.text), 1, 45) AS verse
     FROM content c JOIN editions e ON e.id = c.edition_id
-    WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+    WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
     GROUP BY c.text
   )
 SELECT v.toc_id, v.ref, v.g AS gematria, count(*) AS word_count, group_concat(m.word, ' / ') AS equal_words, v.verse
@@ -296,7 +311,7 @@ SELECT c.toc_id, c.ref, word.value AS word, count(*) AS occurrences
 FROM content c
   JOIN editions e ON e.id = c.edition_id
   JOIN json_each(words(c.text)) AS word
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
   AND gematria(word.value) = 376
 GROUP BY letters(word.value)
 ORDER BY occurrences DESC;`,

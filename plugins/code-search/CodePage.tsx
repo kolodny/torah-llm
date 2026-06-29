@@ -10,6 +10,8 @@ import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import { Button, Group, Text, Code, Table, Select, Anchor, Pagination } from '@mantine/core';
 import { useReactTable, getCoreRowModel, getSortedRowModel, getPaginationRowModel, type SortingState, type ColumnDef } from '@tanstack/react-table';
 import type { PluginContext } from '../../src/plugins/types';
+import type { TocRow } from '../../src/db/types';
+import { BookCheckTree } from '../../src/components/BookTree';
 import { useSlot } from '../../src/plugins/host';
 import { CODE_PAGE_ID, type CellRenderer, type CodeSample } from './api';
 import { HEBREW_CHAR_NAMES } from '../../shared/hebrew-chars';
@@ -49,6 +51,7 @@ function registerSqlCompletion() {
       suggestions.push({ label: 'chapter', kind: K.Function, insertText: 'chapter(${1:ref})', insertTextRules: snippet, detail: 'chapter number from a "chapter:verse" ref (integer, or NULL)', range });
       suggestions.push({ label: 'link', kind: K.Function, insertText: 'link(${1:book}, ${2:ref})', insertTextRules: snippet, detail: 'explicit viewer link (book, ref) — or just select toc_id + ref to auto-link', range });
       suggestions.push({ label: 'evalJS', kind: K.Function, insertText: "evalJS('${1:value.length > 80}', ${2:text})", insertTextRules: snippet, detail: 'run a JS expression (value, args, strip, H)', range });
+      suggestions.push({ label: 'SELECTED', kind: K.Struct, insertText: 'SELECTED', detail: 'the books chosen in the scope selector (e.g. c.toc_id IN SELECTED)', range });
       for (const name of HEBREW_CHAR_NAMES)
         suggestions.push({ label: `${name}()`, kind: K.Function, insertText: `${name}()`, detail: 'Hebrew character', range });
       return { suggestions };
@@ -58,6 +61,17 @@ function registerSqlCompletion() {
 
 // Curated starting points — all core SQLite + built-ins (strip/link/evalJS/PAZER()). Plugins contribute
 // their own samples via the Code page API; they're merged into the dropdown below.
+// Search scope: samples write the bare token `SELECTED`; before a query runs we expand it into a subquery of
+// the chosen book ids, so the chip selector scopes every sample (and any user query) without per-query edits.
+// Usable anywhere a table/value-list goes — `c.toc_id IN SELECTED` or `JOIN SELECTED s ON s.toc_id = c.toc_id`.
+// Defaults to (and falls back to) the Chumash.
+const TORAH_DEFAULT = ['Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy'];
+const expandSelected = (sql: string, books: string[]): string => {
+  const list = (books.length ? books : TORAH_DEFAULT).map((b) => `'${b.replace(/'/g, "''")}'`);
+  const subq = `(SELECT ${list[0]} AS toc_id${list.slice(1).map((v) => ` UNION ALL SELECT ${v}`).join('')})`;
+  return sql.replace(/\bSELECTED\b/g, subq);
+};
+
 const SAMPLES: { label: string; sql: string }[] = [
   {
     label: 'Browse a book (verses auto-link)',
@@ -74,7 +88,7 @@ SELECT c.toc_id, c.ref,
        length(c.text) - length(replace(c.text, PAZER(), '')) AS pazer_count,
        substr(strip(c.text), 1, 50) AS preview
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
   AND pazer_count >= 2
 ORDER BY pazer_count DESC;`,
   },
@@ -117,7 +131,7 @@ WITH ep AS (
 )
 SELECT book AS toc_id, ref, count(*) AS link_count
 FROM ep
-WHERE book IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy')
+WHERE book IN SELECTED
 GROUP BY book, ref
 ORDER BY link_count DESC;`,
   },
@@ -128,7 +142,7 @@ ORDER BY link_count DESC;`,
 -- a classic question of the meforshim). Grouping on the exact text — nikud + te'amim must match too.
 SELECT count(*) AS times, substr(strip(min(c.text)), 1, 55) AS verse
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
 GROUP BY strip(c.text)
 HAVING times >= 3
 ORDER BY times DESC;`,
@@ -141,7 +155,7 @@ ORDER BY times DESC;`,
 SELECT letters(word.value) AS word, count(*) AS times
 FROM content c JOIN editions e ON e.id = c.edition_id
   JOIN json_each(words(c.text)) AS word
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
   AND letters(word.value) <> ''
 GROUP BY letters(word.value)
 ORDER BY times DESC;`,
@@ -154,20 +168,22 @@ ORDER BY times DESC;`,
 SELECT c.toc_id, c.ref, letters(word.value) AS word
 FROM content c JOIN editions e ON e.id = c.edition_id
   JOIN json_each(words(c.text)) AS word
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he' AND letters(word.value) <> ''
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he' AND letters(word.value) <> ''
 GROUP BY letters(word.value)
 HAVING count(*) = 1
 ORDER BY c.toc_id, c.ref;`,
   },
   {
-    label: 'The "shatnez" check — שעטנז across words, in order',
-    sql: `-- BaseHasefer's playful שעטנז check: pesukim with FIVE distinct words — one containing ש, a LATER word ע,
--- then ט, then נ, then ז, in that order. words() splits the verse; the evalJS reduce walks the words, advancing
--- through "שעטנז" whenever the next letter appears in the next word — a match needs all five.
-SELECT c.toc_id, c.ref, substr(strip(c.text), 1, 60) AS preview
+    label: 'The "shatnez" check — a word with all the crown-letters שעטנז',
+    sql: `-- The letters that receive tagin (crowns) when a sofer writes a Torah scroll are שעטנ"ז ג"ץ; the first
+-- five spell שַׁעַטְנֵז. Which words contain all five crown-letters ש ע ט נ ז at once? words() splits each verse,
+-- json_each unnests, letters() bares each word to consonants, evalJS keeps only words covering all five — the
+-- answer is the word שעטנז itself, right where the Torah forbids the mixture: Leviticus 19:19 & Deuteronomy 22:11.
+SELECT c.toc_id, c.ref, word.value AS word
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
-  AND evalJS('JSON.parse(value).reduce((i, w) => i < 5 && w.includes("שעטנז"[i]) ? i + 1 : i, 0) === 5', words(c.text))
+  JOIN json_each(words(c.text)) AS word
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
+  AND evalJS('"שעטנז".split("").every(function (ch) { return value.indexOf(ch) >= 0 })', letters(word.value))
 ORDER BY c.toc_id, c.ref;`,
   },
   {
@@ -179,7 +195,7 @@ WITH torah_words AS (
   SELECT DISTINCT letters(word.value) AS word
   FROM content c JOIN editions e ON e.id = c.edition_id
     JOIN json_each(words(c.text)) AS word
-  WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+  WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
     AND length(letters(word.value)) >= 3
 )
 SELECT group_concat(word, ' / ') AS anagrams, count(*) AS words
@@ -203,7 +219,7 @@ WHERE c.toc_id = 'Genesis' AND c.ref = '1:1' AND e.source = 'sefaria' AND e.lang
 -- chapter(ref) pulls the chapter number out of a "chapter:verse" ref; count the distinct verses in each.
 SELECT c.toc_id, chapter(c.ref) AS chapter, count(DISTINCT c.ref) AS verses
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he' AND chapter(c.ref) IS NOT NULL
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he' AND chapter(c.ref) IS NOT NULL
 GROUP BY c.toc_id, chapter(c.ref)
 ORDER BY verses DESC;`,
   },
@@ -214,7 +230,7 @@ ORDER BY verses DESC;`,
 -- calf) tops the Torah at 34 words.
 SELECT c.toc_id, c.ref, json_array_length(words(c.text)) AS word_count, substr(strip(c.text), 1, 50) AS preview
 FROM content c JOIN editions e ON e.id = c.edition_id
-WHERE c.toc_id IN ('Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy') AND e.source = 'sefaria' AND e.lang = 'he'
+WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
 ORDER BY word_count DESC;`,
   },
   {
@@ -374,6 +390,14 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [ms, setMs] = useState(0);
+  // Search scope (the `SELECTED` token). Defaults to the Chumash; persisted to the URL like the SQL.
+  const [toc, setToc] = useState<TocRow[] | null>(null);
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [selectedBooks, setSelectedBooks] = useState<Set<string>>(() => {
+    const b = initialParams().get('books');
+    return new Set(b ? b.split(',').filter(Boolean) : TORAH_DEFAULT);
+  });
+  useEffect(() => { ctx.data.getToc().then(setToc).catch(() => {}); }, [ctx]);
   const cellRenderers = useSlot<CellRenderer>(CODE_PAGE_ID, 'cellRenderer');
   const renderers = useMemo(() => new Map(cellRenderers.map((r) => [r.id, r] as const)), [cellRenderers]);
   const pluginSamples = useSlot<CodeSample>(CODE_PAGE_ID, 'sample');
@@ -388,15 +412,16 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
     const p = new URLSearchParams(window.location.search);
     p.set('sql', sql);
     p.set('sample', sample);
+    p.set('books', [...selectedBooks].join(','));
     window.history.replaceState(window.history.state, '', `${window.location.pathname}?${p.toString()}`);
-  }, [sql, sample]);
+  }, [sql, sample, selectedBooks]);
 
   const run = async () => {
     setBusy(true);
     setErr('');
     const t = performance.now();
     try {
-      const r = await ctx.data.query(sql);
+      const r = await ctx.data.query(expandSelected(sql, [...selectedBooks]));
       setRows(r);
       setMs(Math.round(performance.now() - t));
     } catch (e) {
@@ -411,7 +436,7 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
     <div className="plugin-page" style={{ maxWidth: 'none' }}>
       <h2>Code · SQLite</h2>
       <Text size="sm" c="dimmed" mb="xs">
-        Query your downloaded books directly (read-only). Autocomplete knows the schema. Built-ins: <Code>strip(text)</Code> (removes HTML); <Code>words(text)</Code> (verse → JSON array of words, use with <Code>json_each</Code>); <Code>letters(text)</Code> (Hebrew letters only); <Code>chapter(ref)</Code> (chapter number of a ref); Hebrew chars as functions (<Code>PAZER()</Code>, <Code>ALEPH()</Code>, …); select <Code>toc_id</Code> + <Code>ref</Code> to auto-link verses (or <Code>link(book, ref [, label])</Code>); <Code>evalJS(expr, ...vals)</Code> runs JS (<Code>value</Code>, <Code>args</Code>, <Code>strip()</Code>, <Code>H</Code> in scope). Plugins add functions, renderers, and samples.
+        Query your downloaded books directly (read-only). Autocomplete knows the schema. Built-ins: <Code>strip(text)</Code> (removes HTML); <Code>words(text)</Code> (verse → JSON array of words, use with <Code>json_each</Code>); <Code>letters(text)</Code> (Hebrew letters only); <Code>chapter(ref)</Code> (chapter number of a ref); Hebrew chars as functions (<Code>PAZER()</Code>, <Code>ALEPH()</Code>, …); select <Code>toc_id</Code> + <Code>ref</Code> to auto-link verses (or <Code>link(book, ref [, label])</Code>); <Code>evalJS(expr, ...vals)</Code> runs JS (<Code>value</Code>, <Code>args</Code>, <Code>strip()</Code>, <Code>H</Code> in scope); <Code>SELECTED</Code> expands to the books chosen in the scope selector above (e.g. <Code>c.toc_id IN SELECTED</Code>). Plugins add functions, renderers, and samples.
       </Text>
       <Select
         label="Sample queries"
@@ -429,6 +454,18 @@ export default function CodePage({ ctx }: { ctx: PluginContext }) {
           setErr('');
         }}
       />
+      {/* Search scope — the `SELECTED` token in the samples expands to these books (defaults to the Chumash). */}
+      <Group gap="xs" mb={scopeOpen ? 'xs' : 'sm'}>
+        <Button variant="light" color="gray" size="xs" onClick={() => setScopeOpen((o) => !o)}>
+          Scope: {selectedBooks.size} book{selectedBooks.size === 1 ? '' : 's'} {scopeOpen ? '▴' : '▾'}
+        </Button>
+        <Text size="xs" c="dimmed">samples search <Code>SELECTED</Code> — toggle which books</Text>
+      </Group>
+      {scopeOpen && toc && (
+        <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 8, padding: 8, marginBottom: 'var(--mantine-spacing-sm)' }}>
+          <BookCheckTree toc={toc} checked={selectedBooks} onChange={setSelectedBooks} />
+        </div>
+      )}
       <div style={{ border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         <Editor height={260} language="sql" theme="vs" value={sql} onChange={(v) => setSql(v ?? '')} onMount={registerSqlCompletion} options={{ minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false, wordWrap: 'on' }} />
       </div>

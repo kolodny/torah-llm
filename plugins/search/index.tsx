@@ -64,7 +64,17 @@ function SearchPanel({ ctx }: { ctx: PluginContext }) {
       {ran && !busy && !notDownloaded && <Text c="dimmed" size="sm" mt="xs">{rows.length} match{rows.length === 1 ? '' : 'es'}</Text>}
       <Stack gap={4} mt="xs">
         {rows.map((r, i) => (
-          <Anchor key={`${r.ref}:${i}`} c="inherit" onClick={() => reader.book && ctx.ui.navigate(reader.book, r.ref)}>
+          <Anchor
+            key={`${r.ref}:${i}`}
+            c="inherit"
+            href={reader.book ? ctx.ui.href(reader.book, r.ref) : undefined}
+            onClick={(e) => {
+              if (!reader.book) return;
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+              e.preventDefault();
+              ctx.ui.navigate(reader.book, r.ref);
+            }}
+          >
             <span className="comm-ref">{r.ref}</span> <span dangerouslySetInnerHTML={{ __html: snippet(r.text, q.trim()) }} />
           </Anchor>
         ))}

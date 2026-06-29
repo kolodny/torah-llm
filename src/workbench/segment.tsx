@@ -9,11 +9,16 @@ import { useMemo, type MouseEvent as ReactMouseEvent } from 'react';
 import DOMPurify from 'dompurify';
 import { useSlot, useDecorationsTick } from '../plugins/host';
 import type { Decoration, DecorationProvider, Segment } from '../plugins/types';
+import { MAM_SPI_SPAN } from '../../shared/strip';
 
 type Mark = Extract<Decoration, { kind: 'mark' }>;
 type LineWidget = Extract<Decoration, { kind: 'lineWidget' }>;
 
-const stripTags = (html: string) => html.replace(/<[^>]+>/g, '');
+// Plaintext basis for decoration offsets. Tag-only (entities stay raw, so offsets mirror the char-by-char
+// walk in decorateHtml — NOT shared stripHtml, which decodes entities and would desync). Mesorah parsha-break
+// markers (<span class="mam-spi-…">{פ}</span>) are dropped here AND skipped as zero-width in decorateHtml, so
+// seg.text stays clean (no stray {פ}/{ס} for plugin analysis) while the two remain offset-consistent.
+const stripTags = (html: string) => html.replace(MAM_SPI_SPAN, '').replace(/<[^>]+>/g, '');
 const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
 // Sanitize once; keep data-deco (mark click delegation) + dir/class/the refLink data-ref the reader uses.
@@ -48,6 +53,15 @@ export function decorateHtml(html: string, marks: Mark[]): string {
     if (html[i] === '<') {
       const end = html.indexOf('>', i);
       const stop = end === -1 ? html.length : end + 1;
+      // Parsha-break marker span: render verbatim but contribute no plaintext (matches stripTags, which
+      // drops it) so offsets after it stay aligned.
+      if (/^<span\b[^>]*\bmam-spi/i.test(html.slice(i, stop))) {
+        const close = html.indexOf('</span>', stop);
+        const spanEnd = close === -1 ? stop : close + 7;
+        out += html.slice(i, spanEnd);
+        i = spanEnd;
+        continue;
+      }
       out += html.slice(i, stop); // copy the whole tag verbatim (doesn't advance plaintext offset)
       i = stop;
     } else {

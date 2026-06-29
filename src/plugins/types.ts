@@ -130,6 +130,9 @@ export type PluginContext = {
     navigate(book: string, ref?: string | null): void;
     peek(book: string, ref: string | null): void;
     showToast(message: string): void;
+    /** The in-app URL for a verse/book (`?page=viewer&book=…&ref=…`). Put it on an <a href> so the link is
+     *  real — cmd/ctrl/middle-click opens a new tab — then preventDefault a plain click and call navigate(). */
+    href(book: string, ref?: string | null): string;
   };
   data: PluginData;
   storage: PluginStorage;

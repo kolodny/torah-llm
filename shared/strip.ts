@@ -21,6 +21,18 @@ export function decodeEntities(s: string): string {
 }
 
 /** Remove HTML tags and decode entities — e.g. "<b>אֱלֹהִים&thinsp;׀</b>" -> "אֱלֹהִים ׀". */
+// Sefaria "Miqra according to the Masorah" parsha-break markers — <span class="mam-spi-pe">{פ}</span>
+// (petucha) and <span class="mam-spi-samekh">{ס}</span> (setuma) — are editorial spacing annotations, not part
+// of the verse. Drop the whole span *including* its bracketed letter, so the plain-text projection (and
+// everything built on it: strip()/words()/letters()/gematria) never reads the פ/ס as a real letter — e.g.
+// without this, Psalms 24:10 ("…סֶלָה׃ {פ}") looks like it ends in פ. Ketiv/qere spans (mam-kq*) carry real
+// text and are intentionally left for the generic tag-strip below to unwrap.
+export const MAM_SPI_SPAN = /<span\b[^>]*\bmam-spi[^>]*>[^<]*<\/span>/gi;
+
 export function stripHtml(v: unknown): string {
-  return decodeEntities(String(v ?? '').replace(/<[^>]+>/g, ''));
+  return decodeEntities(
+    String(v ?? '')
+      .replace(MAM_SPI_SPAN, '')
+      .replace(/<[^>]+>/g, '')
+  );
 }

@@ -55,7 +55,15 @@ function NotesPanel({ ctx }: { ctx: PluginContext }) {
         {shown.map(({ key, note }) => (
           <div key={key}>
             <Group justify="space-between" wrap="nowrap">
-              <Anchor size="sm" onClick={() => ctx.ui.navigate(note.book, note.ref)}>
+              <Anchor
+                size="sm"
+                href={ctx.ui.href(note.book, note.ref)}
+                onClick={(e) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                  e.preventDefault();
+                  ctx.ui.navigate(note.book, note.ref);
+                }}
+              >
                 {note.book} <span className="comm-ref">{note.ref}</span>
               </Anchor>
               <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Delete note" onClick={async () => { await ctx.storage.delete(key); await refreshNotes(ctx); }}>×</ActionIcon>

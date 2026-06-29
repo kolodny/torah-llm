@@ -238,6 +238,7 @@ function contextFor(manifest: PluginManifest): PluginContext {
       navigate: (book, ref) => bridge.navigate(book, ref),
       peek: (book, ref) => bridge.peek(book, ref),
       showToast: (m) => bridge.toast(m),
+      href: (book, ref) => `?page=viewer&book=${encodeURIComponent(book)}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`,
     },
     data,
     storage,
