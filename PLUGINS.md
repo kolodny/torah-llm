@@ -66,6 +66,23 @@ The app's own plugins are the reference — all built this way (`npm run build:p
 - `plugins/torah-code/` — registers SQL functions + a result-cell renderer on the Code page.
 - `plugins/reader-modes/` — contributes whole **reader editors** (lazy, `onBook:*` activation).
 
+## Load it at runtime — the **Custom plugins** panel (no rebuild)
+
+Third-party plugins don't need to be part of the build. Host your bundle anywhere it can be fetched as a
+script, then in the app go to **Storage → Custom plugins** and paste the URL to its `.js`:
+
+- The host injects it as a `<script>`, reads its `export default`, and registers it on the spot — if it
+  declares a page, the nav tab appears immediately (the registry is reactive). No reload needed.
+- The URL is saved in `localStorage` (`torah:user-plugins`) and **auto-loads on every startup**, *after* the
+  first-party plugins — so your plugin can consume an API they expose (e.g. `ctx.getApi('code-search')`).
+- **Remove** forgets the URL; the already-loaded instance stays until the next reload.
+- Your bundle must be reachable from the app's origin. A cross-origin `<script>` runs fine, but the host
+  reads the plugin off `window.__torahPlugin`, so build it the normal way (IIFE via `vite.plugin.config.ts`) —
+  it assigns `export default` there automatically.
+
+Programmatic equivalents are exported from `src/plugins/host.tsx`: `addUserPlugin(url)` /
+`removeUserPlugin(url)` / `getUserPluginUrls()` / `loadUserPlugin(url)`.
+
 ## Trust note
 
 These bundles run **in the host's origin** with full access (same-origin). That's fine for first-party / curated

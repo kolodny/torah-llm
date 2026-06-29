@@ -379,9 +379,34 @@ export function registerExternalPlugin(plugin: Plugin) {
   if (id && shouldActivateOnDiscovery(discovered.get(id)!.events)) activatePlugin(id);
 }
 
+// Inject one plugin bundle (IIFE) <script> and read the plugin object it assigned to the shared
+// window.__torahPlugin global. The IIFE assigns its `export default` there — for a default-only bundle rollup
+// makes that the plugin object itself; a bundle with named exports would be { default: … }. Accept both.
+// MUST be awaited serially (the global is shared across all bundles). Rejects on load error / missing export.
+function injectPluginBundle(src: string): Promise<Plugin> {
+  const w = window as unknown as { __torahPlugin?: (Plugin & { default?: Plugin }) | undefined };
+  return new Promise<Plugin>((resolve, reject) => {
+    w.__torahPlugin = undefined;
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => {
+      const ns = w.__torahPlugin;
+      const plugin = ns?.default ?? ns;
+      s.remove();
+      if (plugin?.manifest) resolve(plugin);
+      else reject(new Error('bundle loaded but exported no plugin (expected `export default definePlugin(...)`)'));
+    };
+    s.onerror = () => {
+      s.remove();
+      reject(new Error(`failed to load script (network/CORS) — ${src}`));
+    };
+    document.head.appendChild(s);
+  });
+}
+
 /** Load runtime plugin bundles listed in public/plugins/index.json by injecting each <script> (IIFE) in turn;
- *  the bundle's default export (`window.__torahPlugin.default`) is then registered. Same path a third-party
- *  plugin uses. Loaded serially because each IIFE writes the shared __torahPlugin global. */
+ *  the bundle's default export is then registered. Same path a third-party plugin uses. Loaded serially
+ *  because each IIFE writes the shared __torahPlugin global. */
 export async function loadExternalPlugins(base: string) {
   let ids: string[] = [];
   try {
@@ -390,27 +415,64 @@ export async function loadExternalPlugins(base: string) {
   } catch {
     /* no external plugins published — fine */
   }
-  // The IIFE assigns its `export default` to window.__torahPlugin — for a default-only bundle rollup makes
-  // that the plugin object itself; if a bundle ever has named exports it'd be { default: … }. Accept both.
-  const w = window as unknown as { __torahPlugin?: Plugin | { default?: Plugin } };
   for (const id of ids) {
-    await new Promise<void>((resolve) => {
-      w.__torahPlugin = undefined;
-      const s = document.createElement('script');
-      s.src = `${base}plugins/${id}.js`;
-      s.onload = () => {
-        const ns = w.__torahPlugin as (Plugin & { default?: Plugin }) | undefined;
-        const plugin = ns?.default ?? ns;
-        if (plugin?.manifest) registerExternalPlugin(plugin);
-        else console.error(`[plugins] external plugin "${id}" has no default export`);
-        resolve();
-      };
-      s.onerror = () => {
-        console.error(`[plugins] failed to load external plugin "${id}"`);
-        resolve();
-      };
-      document.head.appendChild(s);
-    });
+    try {
+      registerExternalPlugin(await injectPluginBundle(`${base}plugins/${id}.js`));
+    } catch (e) {
+      console.error(`[plugins] external plugin "${id}":`, e);
+    }
+  }
+}
+
+// --- user-added external plugins (loaded by URL at runtime) ------------------------------------
+// A user can register third-party plugin bundles by URL (Storage page → Custom plugins). The URLs persist
+// in localStorage and load at startup, AFTER the built-in ones, so a user plugin can consume APIs the
+// first-party plugins expose (e.g. the Code page). These run in the host's origin with FULL access — only
+// add bundles you trust.
+const USER_PLUGINS_KEY = 'torah:user-plugins';
+
+export function getUserPluginUrls(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(USER_PLUGINS_KEY) ?? '[]');
+    return Array.isArray(v) ? (v as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+function setUserPluginUrls(urls: string[]) {
+  localStorage.setItem(USER_PLUGINS_KEY, JSON.stringify(urls));
+}
+
+/** Inject + register one user plugin bundle by URL and return its plugin id. Throws on load/parse failure
+ *  (network/CORS or no default export). An id already in the registry is a silent no-op — discover() dedupes,
+ *  same as the built-in external path — so re-loading the same plugin (StrictMode, reload) is harmless.
+ *  Does NOT persist — callers persist via addUserPlugin() only after a successful load. */
+export async function loadUserPlugin(url: string): Promise<string> {
+  const plugin = await injectPluginBundle(url);
+  registerExternalPlugin(plugin);
+  return plugin.manifest.id;
+}
+
+/** Load + persist a user plugin URL (it'll also auto-load on future startups). Returns the plugin id. */
+export async function addUserPlugin(url: string): Promise<string> {
+  const id = await loadUserPlugin(url); // load first; only persist if it actually registered
+  if (!getUserPluginUrls().includes(url)) setUserPluginUrls([...getUserPluginUrls(), url]);
+  return id;
+}
+
+/** Forget a user plugin URL. The already-loaded instance stays until the next reload (no hot-unload). */
+export function removeUserPlugin(url: string) {
+  setUserPluginUrls(getUserPluginUrls().filter((u) => u !== url));
+}
+
+/** Load every persisted user plugin URL (serial — shared global). Call after loadExternalPlugins(). */
+export async function loadUserPlugins() {
+  for (const url of getUserPluginUrls()) {
+    try {
+      await loadUserPlugin(url);
+    } catch (e) {
+      console.error(`[plugins] user plugin "${url}":`, e);
+    }
   }
 }
 
@@ -448,7 +510,12 @@ export function PluginProvider({ children }: { children: ReactNode }) {
 
   useMemo(() => {
     loadPlugins(); // built-in (bundled) plugins
-    void loadExternalPlugins(import.meta.env.BASE_URL); // runtime .js bundles (same path third-party plugins use)
+    // Runtime .js bundles (same path third-party plugins use): the shipped ones, then any user-added URLs —
+    // serial, so a user plugin can consume APIs the first-party plugins expose (e.g. the Code page).
+    void (async () => {
+      await loadExternalPlugins(import.meta.env.BASE_URL);
+      await loadUserPlugins();
+    })();
   }, []);
   useEffect(() => fireActivation(`onPage:${state.page}`), [state.page]);
 

@@ -6,6 +6,7 @@ import { Group, Button, Text, ScrollArea, Progress, Badge, Stack } from '@mantin
 import { getToc, getLocalBookIds, ensureBook, clearBook } from '../db/client';
 import type { TocRow } from '../db/types';
 import { BookCheckTree, fmtBytes } from '../components/BookTree';
+import CustomPlugins from '../components/CustomPlugins';
 
 export default function StoragePage() {
   const [toc, setToc] = useState<TocRow[] | null>(null);
@@ -108,6 +109,8 @@ export default function StoragePage() {
           />
         )}
       </ScrollArea>
+
+      <CustomPlugins />
     </div>
   );
 }
