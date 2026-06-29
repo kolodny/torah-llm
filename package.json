@@ -30,6 +30,7 @@
     "@tanstack/react-table": "^8.21.3",
     "comlink": "^4.4.2",
     "dompurify": "^3.4.9",
+    "fzstd": "^0.1.1",
     "monaco-editor": "^0.55.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

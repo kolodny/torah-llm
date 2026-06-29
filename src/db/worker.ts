@@ -21,6 +21,7 @@ import { HEBREW_CHAR_STRINGS } from '../../shared/hebrew-chars';
 import { encodeLink } from '../../shared/code-link';
 import { encodeRender } from '../../shared/code-render';
 import { stripHtml as stripTags } from '../../shared/strip';
+import { decompress as zstdDecompress } from 'fzstd';
 
 (self as unknown as { sqlite3ApiConfig?: unknown }).sqlite3ApiConfig = {
   warn: (...args: unknown[]) => {
@@ -102,34 +103,43 @@ function setPublishId(id: string) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function streamInto(pool: any, path: string, url: string, onProgress?: (p: Progress) => void) {
   if (pool.getFileNames().includes(path)) pool.unlink(path); // replace any partial leftover
-  // Prefer a gzipped artifact (smaller download, inflated in-stream); fall back to the plain file so a corpus
-  // not yet re-sliced with gzip still loads. A missing file makes the dev/static server fall back to
-  // index.html (200, text/html) — treat that as "not present" (and, for the plain file, a clear retryable error).
+  // Prefer the zstd artifact (~24% smaller than gzip → the whole index-free corpus fits Pages' 1 GB); fall back
+  // to the plain .sqlite so a corpus not yet re-sliced with zstd still loads. A missing file makes the
+  // dev/static server fall back to index.html (200, text/html) — treat that as "not present".
+  // The browser has no native zstd in DecompressionStream, so we download the compressed bytes (Content-Length
+  // IS the real download size here → accurate progress) and decode them with fzstd before importing.
   const isHtml = (r: Response) => (r.headers.get('content-type') ?? '').includes('text/html');
-  let res = await fetch(`${url}.gz`);
-  const gz = res.ok && !isHtml(res);
-  if (!gz) res = await fetch(url);
+  let res = await fetch(`${url}.zst`);
+  const zst = res.ok && !isHtml(res);
+  if (!zst) res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   if (isHtml(res))
     throw new Error(`Database not available yet at ${url} (server returned a web page). If a data rebuild is in progress, retry in a moment.`);
-  // If the host already set Content-Encoding: gzip, the browser inflated the body for us; otherwise inflate here.
-  const inflate = gz && (res.headers.get('content-encoding') ?? '').toLowerCase() !== 'gzip';
-  // When we inflate, Content-Length is the COMPRESSED size, so received (inflated) would blow past it (>100%).
-  // Drop total in that case so the UI shows MB downloaded instead of a bogus fraction.
-  const total = inflate ? 0 : Number(res.headers.get('content-length') ?? 0);
-  const reader = (inflate ? res.body!.pipeThrough(new DecompressionStream('gzip')) : res.body!).getReader();
+  const total = Number(res.headers.get('content-length') ?? 0);
+  const reader = res.body!.getReader();
+  const parts: Uint8Array[] = [];
   let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    parts.push(value);
+    received += value.length;
+    onProgress?.({ received, total: total ? Math.max(total, received) : 0 });
+  }
+  let bytes = parts.length === 1 ? parts[0] : (() => { const out = new Uint8Array(received); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; })();
+  if (zst) bytes = zstdDecompress(bytes); // Uint8Array (zstd frame) -> SQLite image
   try {
-    await pool.importDb(path, async () => {
-      const { done, value } = await reader.read();
-      if (done || !value) return undefined;
-      received += value.length;
-      onProgress?.({ received, total: total ? Math.max(total, received) : 0 });
-      return value;
+    let off = 0;
+    const CHUNK = 1 << 23; // 8 MB per import chunk
+    await pool.importDb(path, () => {
+      if (off >= bytes.length) return undefined;
+      const c = bytes.subarray(off, off + CHUNK);
+      off += CHUNK;
+      return c;
     });
   } catch (e) {
-    // A failed/aborted stream leaves a truncated file behind; unlink it so a retry re-downloads cleanly
-    // instead of attaching a partial db.
+    // A failed import leaves a truncated file behind; unlink it so a retry re-imports cleanly.
     if (pool.getFileNames().includes(path)) pool.unlink(path);
     throw e;
   }

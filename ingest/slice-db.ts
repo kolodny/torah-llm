@@ -13,7 +13,12 @@
 import Database from 'better-sqlite3';
 import { resolve } from 'node:path';
 import { rmSync, mkdirSync, statSync, writeFileSync, readFileSync } from 'node:fs';
-import { gzipSync } from 'node:zlib';
+import { zstdCompressSync, constants as zlibConstants } from 'node:zlib';
+
+// Ship slices zstd-compressed (level 19): ~24% smaller than gzip -9, so the whole index-free corpus fits
+// GitHub Pages' 1 GB limit. The browser has no native zstd in DecompressionStream, so the worker decodes with
+// the tiny `fzstd` lib; the .zst is a standard zstd frame (also trivially decodable from Python/CLI).
+const ZSTD = (buf: Buffer) => zstdCompressSync(buf, { params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 } });
 import { createHash } from 'node:crypto';
 
 import { SCHEMA_SQL, BOOT_VERSION } from '../shared/schema.ts';
@@ -27,16 +32,21 @@ const masterPath = process.env.MASTER ? resolve(process.env.MASTER) : resolve(ro
 const outDir = process.env.OUT ? resolve(process.env.OUT) : resolve(root, 'public', 'db');
 // Per-book slices are write-once transport: their rows are merged into the client cache (which keeps its own
 // constraints + indexes) on download, so a slice's own indexes are never queried. Ship slices TRULY
-// index-free: strip explicit CREATE INDEX *and* the inline UNIQUE(...) table constraints — the latter create
-// big auto-indexes (links' UNIQUE(from_id,from_ref,to_id,to_ref) alone is ~9.6 MB of a 22 MB Genesis slice).
-// The master has no duplicate rows, so the slice needs no UNIQUE to dedup; the client's main DB keeps the
-// constraints/indexes that queries (and the INSERT OR IGNORE merge) rely on. We drop the comma + the
-// UNIQUE(...) clause together so each CREATE TABLE stays valid SQL.
+// Fully index-free slices — they're transport-only (the client INSERT…SELECTs them into the main DB, which
+// keeps the real constraints/indexes). We strip everything that builds a btree:
+//   • explicit CREATE INDEX lines,
+//   • inline UNIQUE(...) table constraints (their auto-index is huge — links' UNIQUE alone was ~9.6 MB of a
+//     22 MB Genesis slice; content's ~344 MB across the whole master),
+//   • TEXT PRIMARY KEY (toc.id / editions.id / meta.toc_id → sqlite_autoindex_*); the keyword is dropped but
+//     the column kept. INTEGER PRIMARY KEY is LEFT ALONE — it's the rowid (no separate btree), and removing it
+//     would add a hidden rowid *and* duplicate the id column, growing the slice.
+// The master has no duplicate rows, so dropping UNIQUE/PK is safe for transport.
 const SLICE_SCHEMA = SCHEMA_SQL
   .split('\n')
   .filter((l) => !/CREATE (UNIQUE )?INDEX/i.test(l))
   .join('\n')
-  .replace(/,\s*UNIQUE\s*\([^)]*\)/gi, '');
+  .replace(/,\s*UNIQUE\s*\([^)]*\)/gi, '')
+  .replace(/\bTEXT\s+PRIMARY KEY\b/gi, 'TEXT');
 const attach = (p: string) => `ATTACH DATABASE '${p.replace(/'/g, "''")}' AS master`;
 
 if (!BOOT_ONLY) rmSync(outDir, { recursive: true, force: true });
@@ -100,14 +110,14 @@ for (const { id } of books) {
       .run(id, id);
     slice.exec(`DETACH DATABASE master`);
     slice.close();
-    // Ship the slice gzipped (it's what the browser fetches); file_size records the compressed download size.
-    const gzipped = gzipSync(readFileSync(file), { level: 9 });
-    writeFileSync(`${file}.gz`, gzipped);
+    // Ship the slice zstd-compressed (it's what the browser fetches); file_size records the compressed download size.
+    const compressed = ZSTD(readFileSync(file));
+    writeFileSync(`${file}.zst`, compressed);
     rmSync(file, { force: true });
-    size = gzipped.length;
+    size = compressed.length;
   } else {
     try {
-      size = statSync(`${file}.gz`).size;
+      size = statSync(`${file}.zst`).size;
     } catch {
       /* BOOT_ONLY with a missing slice — leave size 0 */
     }
@@ -166,11 +176,11 @@ tocDb.exec(`DETACH DATABASE master`);
 tocDb.exec(`PRAGMA user_version = ${BOOT_VERSION}`);
 tocDb.close();
 master.close();
-// Ship the boot DB gzipped too (fetched on every cold start); db.sqlite.gz replaces db.sqlite.
-const tocGz = gzipSync(readFileSync(tocDbPath), { level: 9 });
-writeFileSync(`${tocDbPath}.gz`, tocGz);
+// Ship the boot DB zstd-compressed too (fetched on every cold start); db.sqlite.zst replaces db.sqlite.
+const tocZst = ZSTD(readFileSync(tocDbPath));
+writeFileSync(`${tocDbPath}.zst`, tocZst);
 rmSync(tocDbPath, { force: true });
-const tocSize = tocGz.length;
+const tocSize = tocZst.length;
 
 // publishId changes iff the catalog structure OR any book's content_version changed → the client knows
 // to refresh the catalog (and lazily re-merge the books that actually differ) without a wipe.
