@@ -95,8 +95,12 @@ const setMeta = master.prepare(`UPDATE toc SET file_size = ?, content_version = 
 const edCount = master.prepare(`SELECT COUNT(*) AS c FROM editions WHERE toc_id = ?`);
 const versions: Array<[string, string]> = [];
 
+const usedNames = new Set<string>([TOC_DB]); // reserve the boot-DB name so no book can shadow it
 for (const { id } of books) {
-  const file = resolve(outDir, sliceFileName(id));
+  const fname = sliceFileName(id);
+  if (usedNames.has(fname)) throw new Error(`slice filename collision: "${fname}" (toc id ${JSON.stringify(id)}) — sliceFileName must be injective`);
+  usedNames.add(fname);
+  const file = resolve(outDir, fname);
   let size = 0;
   if (!BOOT_ONLY) {
     const slice = new Database(file);

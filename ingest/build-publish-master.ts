@@ -13,7 +13,9 @@ import { SCHEMA_SQL } from '../shared/schema.ts';
 // What the public build includes.
 const SOURCES = ['sefaria']; // only Sefaria for now (other adapters add <1% but extra scope)
 const LANGS = ['he', 'en', 'arc']; // main Hebrew + English (+ Aramaic targumim); drops e.g. French
-const EXCLUDE_TOP_CATEGORIES = new Set(['Halakhah', 'Second Temple']); // dropped to fit under 1 GB
+// Previously dropped Halakhah + Second Temple to fit gzip under GitHub Pages' 1 GB limit; with zstd-19 slices
+// (LLM/053) the whole corpus fits (~800 MB), so we now ship everything.
+const EXCLUDE_TOP_CATEGORIES = new Set<string>();
 
 const root = resolve(import.meta.dirname, '..');
 const srcPath = resolve(root, 'data', 'master.sqlite');

@@ -24,13 +24,18 @@ function hashId(s: string): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
 }
 
+// Readable slice filename: the TOC id with non-alphanumeric runs collapsed to '_' and trimmed, e.g.
+//   'A Jewish Critique of the Philosophy of Martin Buber, Postscript'
+//     -> 'A_Jewish_Critique_of_the_Philosophy_of_Martin_Buber_Postscript_<hash>.sqlite'
+// The trailing 8-hex of the 53-bit id hash keeps it UNIQUE: some ids slug identically (e.g. two that differ
+// only by a trailing '*'), which would otherwise collide and silently drop a book. The hash only has to
+// separate same-slug ids (tiny groups), so 8 hex is ample. Pure + deterministic + ASCII-only ([A-Za-z0-9_.]),
+// so the slicer and client always agree and no URL re-encoding is needed (kills the old %-double-encoding).
 export function sliceFileName(tocId: string): string {
-  const enc = encodeURIComponent(tocId);
-  // Filenames cap at 255 bytes; a long/encoded id (e.g. a deeply-nested complex-text sub-book) can
-  // blow past that → fall back to a hash. Deterministic + shared, so slicer and client agree.
-  return enc.length <= 200 ? `toc_${enc}.sqlite` : `toc_h${hashId(tocId)}.sqlite`;
+  const slug = tocId.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 180);
+  return `${slug}_${hashId(tocId).slice(0, 8)}.sqlite`;
 }
 
 export function sliceUrlPath(tocId: string): string {
-  return encodeURIComponent(sliceFileName(tocId));
+  return sliceFileName(tocId); // already filesystem/URL-safe — no encodeURIComponent needed
 }
