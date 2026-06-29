@@ -13,7 +13,7 @@
     "publish:db": "npm run publish:master && npm run publish:slice",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit && rm -rf dist/assets && mkdir -p dist && cp public/favicon.* public/pwa-*.png public/maskable-*.png public/apple-touch-*.png dist/ && vite build",
+    "build": "tsc --noEmit && npm run build:plugins && rm -rf dist/assets dist/plugins && mkdir -p dist && cp public/favicon.* public/pwa-*.png public/maskable-*.png public/apple-touch-*.png dist/ && cp -r public/plugins dist/plugins && vite build",
     "build:db": "mkdir -p dist/db && rsync -a --delete public/db/ dist/db/",
     "build:all": "npm run build && npm run build:db",
     "preview": "vite preview",

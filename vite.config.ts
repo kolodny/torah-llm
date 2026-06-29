@@ -32,7 +32,9 @@ export default defineConfig({
         // Precache the app shell AND the small boot catalog (db/db.sqlite.zst ~1 MB + its manifest) so the
         // catalog resolves OFFLINE even on a fresh/evicted OPFS (otherwise the boot fetch fails offline and the
         // catalog never loads). The large per-book slices (db/toc_*) stay fetched on demand into OPFS.
-        globPatterns: ['**/*.{js,css,html,wasm,ttf,svg,ico,png,woff2}', 'db/db.sqlite.zst', 'db/manifest.json'],
+        // External plugin bundles (plugins/<id>.js) are covered by the **/*.js glob; their loader manifest
+        // plugins/index.json must be added explicitly (json isn't globbed) so plugins load OFFLINE too.
+        globPatterns: ['**/*.{js,css,html,wasm,ttf,svg,ico,png,woff2}', 'plugins/index.json', 'db/db.sqlite.zst', 'db/manifest.json'],
         globIgnores: ['**/db/toc_*'],
         navigateFallbackDenylist: [/\/db\//],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // the SQLite .wasm is ~865 KB + the boot db ~1.5 MB; allow headroom
