@@ -439,9 +439,12 @@ const coerceSql = (r: unknown): number | string | null =>
 type SqlFnSpec = { name: string; args: string[]; body: string; arity?: number };
 const pluginFnSpecs: SqlFnSpec[] = [];
 function registerPluginFn(spec: SqlFnSpec) {
+  // Plugin fn bodies get `strip` (= stripHtml, the canonical HTML/annotation cleanup) and `H` (Hebrew char
+  // strings) in scope as trailing params — same as evalJS — so functions like gematria()/torah_code_find()
+  // clean presentation markup the one true way instead of re-extracting letters from raw HTML.
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function(...spec.args, spec.body) as (...a: unknown[]) => unknown;
-  db.createFunction(spec.name, (_pCx: unknown, ...a: unknown[]) => coerceSql(fn(...a)), { arity: spec.arity ?? -1, deterministic: true });
+  const fn = new Function(...spec.args, 'strip', 'H', spec.body) as (...a: unknown[]) => unknown;
+  db.createFunction(spec.name, (_pCx: unknown, ...a: unknown[]) => coerceSql(fn(...a, stripTags, HEBREW_CHAR_STRINGS)), { arity: spec.arity ?? -1, deterministic: true });
 }
 
 // User queries (api.exec) are time-limited via the progress handler so one runaway query can't wedge the worker.

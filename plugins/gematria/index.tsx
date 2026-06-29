@@ -26,14 +26,14 @@ const strip = (html: string) => {
   return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
 };
 // The same gematria math as a pure body string, so the Code page's SQL gematria(text) matches this tooltip's.
-const GEMATRIA_BODY = `var GV=${JSON.stringify(VALUE)}; var t=String(text), n=0; for (var i=0;i<t.length;i++) n+=GV[t[i]]||0; return n;`;
+const GEMATRIA_BODY = `var GV=${JSON.stringify(VALUE)}; var t=strip(String(text)).match(/[א-ת]/g)||[], n=0; for (var i=0;i<t.length;i++) n+=GV[t[i]]||0; return n;`;
 // Atbash: each letter swaps with its mirror across the alef-bet (א↔ת, ב↔ש, …); atbash(text) sums the
 // values of those mirrored letters. ATBASH[c] = the standard value of c's mirror; finals fold to their base.
 const ALEPH_BET = 'אבגדהוזחטיכלמנסעפצקרשת';
 const ATBASH: Record<string, number> = {};
 [...ALEPH_BET].forEach((c, i) => { ATBASH[c] = VALUE[ALEPH_BET[ALEPH_BET.length - 1 - i]]; });
 for (const [f, b] of Object.entries({ ך: 'כ', ם: 'מ', ן: 'נ', ף: 'פ', ץ: 'צ' })) ATBASH[f] = ATBASH[b];
-const ATBASH_BODY = `var AV=${JSON.stringify(ATBASH)}; var t=String(text), n=0; for (var i=0;i<t.length;i++) n+=AV[t[i]]||0; return n;`;
+const ATBASH_BODY = `var AV=${JSON.stringify(ATBASH)}; var t=strip(String(text)).match(/[א-ת]/g)||[], n=0; for (var i=0;i<t.length;i++) n+=AV[t[i]]||0; return n;`;
 let highlightValue: number | null = null;
 
 function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {

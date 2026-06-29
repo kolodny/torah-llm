@@ -21,17 +21,25 @@ export function decodeEntities(s: string): string {
 }
 
 /** Remove HTML tags and decode entities — e.g. "<b>אֱלֹהִים&thinsp;׀</b>" -> "אֱלֹהִים ׀". */
-// Sefaria "Miqra according to the Masorah" parsha-break markers — <span class="mam-spi-pe">{פ}</span>
-// (petucha) and <span class="mam-spi-samekh">{ס}</span> (setuma) — are editorial spacing annotations, not part
-// of the verse. Drop the whole span *including* its bracketed letter, so the plain-text projection (and
-// everything built on it: strip()/words()/letters()/gematria) never reads the פ/ס as a real letter — e.g.
-// without this, Psalms 24:10 ("…סֶלָה׃ {פ}") looks like it ends in פ. Ketiv/qere spans (mam-kq*) carry real
-// text and are intentionally left for the generic tag-strip below to unwrap.
+// Editorial / annotation ELEMENTS whose CONTENT is not part of the source text — dropped element-and-all, so
+// the plain-text projection (and everything built on it: strip()/words()/letters()/gematria/torah codes) never
+// reads their letters. Determined by auditing the whole corpus's markup (ingest/scan-html.mjs):
+//   • <sup class="footnote-marker">*</sup> + <i class="footnote">…</i> — the by-far most common annotation
+//     (~385k each): translator/masoretic notes (e.g. "בספרי ספרד ואשכנז …"), NOT the text. Footnote bodies can
+//     nest tags (<big>…), so match lazily to the element's own close.
+//   • <span class="mam-spi-…">{פ}/{ס}</span> — "Miqra according to the Masorah" parsha-break markers (petucha/
+//     setuma); without this Psalms 24:10 ("…סֶלָה׃ {פ}") looks like it ends in פ.
+// Everything else (b/i/small/sup/big/strong/em, span.poetry/refLink/font…, and mam-kq* ketiv/qere — which IS
+// real text) just gets unwrapped by the generic tag-strip below, keeping its content.
 export const MAM_SPI_SPAN = /<span\b[^>]*\bmam-spi[^>]*>[^<]*<\/span>/gi;
+const FOOTNOTE_MARKER = /<sup\b[^>]*\bfootnote-marker\b[^>]*>[\s\S]*?<\/sup>/gi;
+const FOOTNOTE = /<i\b[^>]*\bfootnote\b[^>]*>[\s\S]*?<\/i>/gi;
 
 export function stripHtml(v: unknown): string {
   return decodeEntities(
     String(v ?? '')
+      .replace(FOOTNOTE_MARKER, '')
+      .replace(FOOTNOTE, '')
       .replace(MAM_SPI_SPAN, '')
       .replace(/<[^>]+>/g, '')
   );

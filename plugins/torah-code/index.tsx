@@ -10,8 +10,8 @@ import { codePageApi } from '../code-search/api';
 // [minSkip, maxSkip]; returns a JSON handle
 // {start, skip, len} to feed render('torah-code', book, handle), or NULL. (json_extract it for the numbers.)
 const FIND_BODY = `
-var letters = String(text).replace(/[^א-ת]/g, '');
-var w = String(word).replace(/[^א-ת]/g, '');
+var letters = (strip(String(text)).match(/[א-ת]/g) || []).join('');
+var w = (String(word).match(/[א-ת]/g) || []).join('');
 var n = letters.length, m = w.length;
 if (m < 2 || n < m) return null;
 // Anchor the scan on the word's RAREST letter (fewest start candidates), and bail if any letter is absent —
@@ -81,7 +81,7 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
   const a3 = args[3];
   const a4 = args[4];
   const handleStr = typeof a1 === 'string' && a1.trim().startsWith('{') ? a1 : '';
-  const word = typeof a1 === 'string' && !handleStr ? a1.replace(/[^א-ת]/g, '') : '';
+  const word = typeof a1 === 'string' && !handleStr ? (a1.match(/[א-ת]/g) || []).join('') : '';
   const [letters, setLetters] = useState<{ ch: string; book: string; ref: string }[] | null>(null);
   const [err, setErr] = useState('');
 
@@ -104,7 +104,7 @@ function TorahCodeMatrix({ args, ctx }: { args: unknown[]; ctx: PluginContext })
         const out: { ch: string; book: string; ref: string }[] = [];
         books.forEach((b, bi) => {
           for (const r of perBook[bi] as { ref: string; text: string }[])
-            for (const ch of stripHtml(r.text).replace(/[^א-ת]/g, '')) out.push({ ch, book: b, ref: r.ref });
+            for (const ch of stripHtml(r.text).match(/[א-ת]/g) || []) out.push({ ch, book: b, ref: r.ref });
         });
         setLetters(out);
       })
