@@ -61,7 +61,7 @@ function NotesPanel({ ctx }: { ctx: PluginContext }) {
               </Anchor>
               <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Delete note" onClick={async () => { await ctx.storage.delete(key); await refreshNotes(ctx); }}>×</ActionIcon>
             </Group>
-            <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{note.body}</Text>
+            <Text size="sm" dir="auto" style={{ whiteSpace: 'pre-wrap' }}>{note.body}</Text>
           </div>
         ))}
       </Stack>

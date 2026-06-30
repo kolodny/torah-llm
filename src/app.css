@@ -413,6 +413,12 @@ body {
 .plugin-songs-for { font-size: 13px; margin-bottom: 6px; }
 .plugin-gem-mode { font-size: 12px; color: var(--muted); display: block; margin: 6px 0; }
 .plugin-gem-hit { font-size: 16px; font-family: 'Times New Roman', serif; }
+/* A gematria result row: English ref then the Hebrew verse, sitting right next to each other. The verse box
+   is content-sized (shrink-but-don't-grow) so there's no whitespace gap; it's RTL and clips to a single-line
+   ellipsis only when the verse is too long to fit. */
+.gem-hit { display: flex; gap: 8px; align-items: baseline; }
+.gem-hit-ref { flex: none; white-space: nowrap; }
+.gem-hit-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ===== editor registry: the picker tabs + the continuous (flow) reader ===== */
 .editor-picker {

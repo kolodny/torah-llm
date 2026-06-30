@@ -174,17 +174,29 @@ HAVING count(*) = 1
 ORDER BY c.toc_id, c.ref;`,
   },
   {
-    label: 'The "shatnez" check — a word with all the crown-letters שעטנז',
-    sql: `-- The letters that receive tagin (crowns) when a sofer writes a Torah scroll are שעטנ"ז ג"ץ; the first
--- five spell שַׁעַטְנֵז. Which words contain all five crown-letters ש ע ט נ ז at once? words() splits each verse,
--- json_each unnests, letters() bares each word to consonants, evalJS keeps only words covering all five — the
--- answer is the word שעטנז itself, right where the Torah forbids the mixture: Leviticus 19:19 & Deuteronomy 22:11.
-SELECT c.toc_id, c.ref, word.value AS word
-FROM content c JOIN editions e ON e.id = c.edition_id
-  JOIN json_each(words(c.text)) AS word
-WHERE c.toc_id IN SELECTED AND e.source = 'sefaria' AND e.lang = 'he'
-  AND evalJS('"שעטנז".split("").every(function (ch) { return value.indexOf(ch) >= 0 })', letters(word.value))
-ORDER BY c.toc_id, c.ref;`,
+    label: 'Crown letters (תגין) — the Tanakh word with the most, and the one that ties it',
+    sql: `-- A sofer crowns seven letters with three tagin — שַׁעַטְנֵ"ז גֵּ"ץ (ש ע ט נ ז ג צ). Which Tanakh WORD packs the
+-- most crown-letters? words() splits each verse, letters() bares it to consonants, evalJS counts the crown-letters
+-- (incl. the finals ן/ץ). The record is FIVE — and exactly TWO words reach it: שעטנז (the forbidden mixture,
+-- twice in Chumash — Lev 19:19 & Deut 22:11) and — the lovely surprise — שַׁעַשְׁגַז, a chamberlain of
+-- Achashverosh in Esther 2:14. Scans the
+-- canonical Tanakh (Torah/Prophets/Writings) regardless of the scope chips — download those books first (Storage).
+WITH tanakh_words AS (
+  SELECT letters(tok.value) AS lw
+  FROM content c
+    JOIN editions e ON e.id = c.edition_id
+    JOIN toc t ON t.id = c.toc_id
+    JOIN json_each(words(c.text)) AS tok
+  WHERE t.parent_id IN ('Tanakh / Torah', 'Tanakh / Prophets', 'Tanakh / Writings')
+    AND e.source = 'sefaria' AND e.lang = 'he' AND length(letters(tok.value)) >= 3
+)
+SELECT lw AS word, length(lw) AS letters,
+       evalJS('(value.match(/[שעטנזגצןץ]/g) || []).length', lw) AS crowns,
+       count(*) AS occurrences
+FROM tanakh_words
+GROUP BY lw
+ORDER BY crowns DESC, letters ASC
+LIMIT 50;`,
   },
   {
     label: 'Anagram families in the Torah',

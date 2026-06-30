@@ -8,7 +8,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { TextInput, SegmentedControl, Button, Group, Stack, Text, Anchor, ScrollArea, Badge } from '@mantine/core';
 import type { PluginContext, Decoration, Verse, Segment, TextSelection, TocRow } from '../../src/plugins/Plugin.type';
 import { CODE_PAGE_ID, type CodePageApiFactory } from '../code-search/api';
-const { definePlugin, components: { BookCheckTree } } = window.__torahRuntime.sdk;
+const { definePlugin, components: { BookCheckTree }, util: { stripHtml } } = window.__torahRuntime.sdk;
 
 const VALUE: Record<string, number> = {
   א: 1, ב: 2, ג: 3, ד: 4, ה: 5, ו: 6, ז: 7, ח: 8, ט: 9,
@@ -17,13 +17,11 @@ const VALUE: Record<string, number> = {
 };
 const gematria = (s: string) => [...s.replace(/[^א-ת]/g, '')].reduce((n, c) => n + (VALUE[c] ?? 0), 0);
 const RTL = /^(he|arc|yi)/;
-// Strip HTML tags AND decode entities (&thinsp;/&nbsp;/… → real whitespace) via the DOM, so previews show
-// clean text (not literal "&thinsp;") and word-mode tokenization splits on entity-spacing too. Main-thread only.
-const strip = (html: string) => {
-  const el = document.createElement('div');
-  el.innerHTML = html ?? '';
-  return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
-};
+// Use the host's shared stripHtml so the page counts letters EXACTLY like the corpus does: it drops
+// presentation/annotation markup that a plain tag-strip would leave behind — footnotes and the parsha-break
+// markers <span class="mam-spi-*">{פ}/{ס}</span>. A naive textContent strip keeps that "{פ}", so e.g. Psalms
+// 59:18 (…חַסְדִּי׃ {פ}) scored 1080 instead of its true 1000 and was missed. We just collapse whitespace on top.
+const strip = (html: string) => stripHtml(html).replace(/\s+/g, ' ').trim();
 // The same gematria math as a pure body string, so the Code page's SQL gematria(text) matches this tooltip's.
 const GEMATRIA_BODY = `var GV=${JSON.stringify(VALUE)}; var t=strip(String(text)).match(/[א-ת]/g)||[], n=0; for (var i=0;i<t.length;i++) n+=GV[t[i]]||0; return n;`;
 // Atbash: each letter swaps with its mirror across the alef-bet (א↔ת, ב↔ש, …); atbash(text) sums the
@@ -76,7 +74,9 @@ function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {
     for (const r of rows) {
       const plain = strip(r.text);
       if (mode === 'verse') {
-        if (gematria(plain) === n) out.push({ book: r.book, ref: r.ref, text: plain.slice(0, 70) });
+        // Keep the full verse — the result row clips it with a CSS ellipsis at the correct (RTL) end,
+        // instead of a mid-word JS slice that read awkwardly left-to-right.
+        if (gematria(plain) === n) out.push({ book: r.book, ref: r.ref, text: plain });
       } else {
         for (const w of plain.split(/[\s־]+/)) {
           const clean = w.replace(/[^א-ת]/g, '');
@@ -137,8 +137,9 @@ function GematriaSearchPage({ ctx }: { ctx: PluginContext }) {
       )}
       <Stack gap={4} mt="xs">
         {hits.map((h, i) => (
-          <Anchor key={`${h.book}:${h.ref}:${i}`} {...ctx.ui.linkProps(h.book, h.ref)} c="inherit">
-            <span className="comm-ref">{h.book} {h.ref}</span> <span dir="rtl" className="plugin-gem-hit">{h.text}</span>
+          <Anchor key={`${h.book}:${h.ref}:${i}`} {...ctx.ui.linkProps(h.book, h.ref)} c="inherit" className="gem-hit">
+            <span className="comm-ref gem-hit-ref">{h.book} {h.ref}</span>
+            <span dir="rtl" className="plugin-gem-hit gem-hit-text">{h.text}</span>
           </Anchor>
         ))}
       </Stack>

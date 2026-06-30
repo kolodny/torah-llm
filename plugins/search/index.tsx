@@ -66,7 +66,7 @@ function SearchPanel({ ctx }: { ctx: PluginContext }) {
       <Stack gap={4} mt="xs">
         {rows.map((r, i) => (
           <Anchor key={`${r.ref}:${i}`} c="inherit" {...(reader.book ? ctx.ui.linkProps(reader.book, r.ref) : {})}>
-            <span className="comm-ref">{r.ref}</span> <span dangerouslySetInnerHTML={{ __html: snippet(r.text, q.trim()) }} />
+            <span className="comm-ref">{r.ref}</span> <span dir="auto" dangerouslySetInnerHTML={{ __html: snippet(r.text, q.trim()) }} />
           </Anchor>
         ))}
       </Stack>
